@@ -602,7 +602,8 @@ func TestHiddenMines(t *testing.T) {
 	r := CreateRoom("MINES", "")
 	a, b := AddPlayer(r, "layer"), AddPlayer(r, "victim")
 	clearTerrain(r)
-	a.Type, a.Mines, a.X, a.Y, a.BodyAngle = "jeep", 4, 500, 700, 0
+	a.Type, a.Mines, a.X, a.Y, a.BodyAngle = "asv", Types["asv"].Mines, 500, 700, 0
+	check(t, a.Mines == 4 && Types["jeep"].Mines == 0, "the ASV is the mine layer, carrying 4")
 	SetInput(a, input(msg{"mine": true}))
 	Step(r, 700_000, Tick)
 	check(t, len(r.Mines) == 1 && a.Mines == 3, "mine laid")
@@ -614,14 +615,14 @@ func TestHiddenMines(t *testing.T) {
 	Step(r, 700_200, Tick)
 	check(t, b.HP == hp, "mine not armed instantly")
 	Step(r, 700_800, Tick)
-	check(t, b.HP < hp && len(r.Mines) == 0, "enemy detonates the hidden mine")
+	check(t, !b.Alive && len(r.Mines) == 0, "a full-health tank driving over the mine is destroyed")
 }
 
 func TestPartialMineStockCannotBeLaid(t *testing.T) {
 	r := CreateRoom("STOCK", "")
 	a := AddPlayer(r, "layer")
 	clearTerrain(r)
-	a.Type, a.Mines, a.X, a.Y = "jeep", .4, 900, 300
+	a.Type, a.Mines, a.X, a.Y = "asv", .4, 900, 300
 	SetInput(a, input(msg{"mine": true}))
 	Step(r, 710_000, Tick)
 	check(t, len(r.Mines) == 0 && a.Mines == .4, "a partly refilled mine stock is not a mine")
@@ -808,4 +809,138 @@ func TestTurretLeadsMovingTarget(t *testing.T) {
 	check(t, a > .05, "turret aims ahead of a crossing target, angle %v", a)
 	still := &Player{X: 400, Y: 0}
 	check(t, math.Abs(leadAngle(0, 0, still, TurretShellSpeed)) < 1e-9, "aims straight at a parked target")
+}
+
+func TestAATurretOnlyEngagesAircraft(t *testing.T) {
+	r := CreateRoom("AAGND", "")
+	r.Scenery, r.Obstacles = nil, nil
+	r.Turrets = []*Turret{{ID: 1, Kind: "aa", Team: "blue", X: 400, Y: 700, HP: 160}}
+	AddPlayer(r, "blue")
+	red := AddPlayer(r, "red")
+	red.Type, red.X, red.Y, red.HP = "tank", 650, 700, Types["tank"].HP
+	runTicks(r, 60, 300_000)
+	for _, b := range r.Bullets {
+		check(t, b.Kind != "aa", "no missile fired at a tank")
+	}
+	check(t, red.HP == Types["tank"].HP, "tank untouched, hp %v", red.HP)
+}
+
+func TestAAMissileHomesOnHelicopter(t *testing.T) {
+	r := CreateRoom("AAHELI", "")
+	r.Scenery, r.Obstacles = nil, nil
+	r.Turrets = []*Turret{{ID: 1, Kind: "aa", Team: "blue", X: 400, Y: 700, HP: 160}}
+	AddPlayer(r, "blue")
+	heli := AddPlayer(r, "red")
+	heli.Type, heli.X, heli.Y, heli.HP = "heli", 900, 700, Types["heli"].HP
+	SetInput(heli, input(msg{"dy": -1.0, "driveMode": "classic"}))
+	heli.BodyAngle = math.Pi / 2
+	fired := false
+	for i := 0; i < 150 && heli.Alive && heli.HP == Types["heli"].HP; i++ {
+		runTicks(r, 1, 300_000+float64(i)*33)
+		for _, b := range r.Bullets {
+			fired = fired || b.Kind == "aa"
+		}
+	}
+	check(t, fired, "AA site launched a missile at the helicopter")
+	check(t, heli.HP < Types["heli"].HP, "missile caught the moving helicopter, hp %v", heli.HP)
+}
+
+func TestAAMissileDownsDrone(t *testing.T) {
+	r := CreateRoom("AADRONE", "")
+	r.Scenery, r.Obstacles = nil, nil
+	r.Turrets = []*Turret{{ID: 1, Kind: "aa", Team: "blue", X: 400, Y: 700, HP: 160}}
+	AddPlayer(r, "blue")
+	pilot := AddPlayer(r, "red")
+	pilot.Type, pilot.X, pilot.Y = "fpv", 1300, 700
+	r.Drones = []*Drone{{ID: "d1", OwnerID: pilot.ID, Team: "red", X: 800, Y: 700, ExpiresAt: 1e12}}
+	for i := 0; i < 120 && len(r.Drones) > 0; i++ {
+		stepTurrets(r, 300_000+float64(i)*33)
+		stepBullets(r, 300_000+float64(i)*33, 1.0/30)
+	}
+	check(t, len(r.Drones) == 0, "drone shot down")
+	check(t, pilot.Alive, "pilot on the ground is unharmed")
+}
+
+func TestAAHoldsFireOutOfRange(t *testing.T) {
+	r := CreateRoom("AARNG", "")
+	r.Scenery, r.Obstacles = nil, nil
+	r.Turrets = []*Turret{{ID: 1, Kind: "aa", Team: "blue", X: 400, Y: 700, HP: 160}}
+	AddPlayer(r, "blue")
+	heli := AddPlayer(r, "red")
+	heli.Type, heli.X, heli.Y = "heli", 400+AARange+40, 700
+	stepTurrets(r, 300_000)
+	check(t, len(r.Bullets) == 0, "no launch beyond %v units", AARange)
+	heli.X = 400 + AARange - 40
+	stepTurrets(r, 300_000)
+	check(t, len(r.Bullets) == 1 && r.Bullets[0].Kind == "aa", "launches once in range")
+}
+
+func TestHeliRocketsWreckBuildingsAndBridges(t *testing.T) {
+	r := CreateRoom("HROCK", "")
+	r.Scenery, r.Turrets = nil, nil
+	heli := AddPlayer(r, "blue")
+	heli.Type, heli.Mines = "heli", Types["heli"].Mines
+	building := &Object{ID: 99, Kind: "building", X: 900, Y: 600, W: 80, H: 60, HP: 300, MaxHP: 300}
+	r.Obstacles = []*Object{building}
+	heli.X, heli.Y = 940, 400
+	now := 300_000.0
+	for i := 0; building.HP > 0 && i < 8; i++ {
+		heli.Input.TargetX, heli.Input.TargetY = 940, 630
+		fireHeliRocket(r, heli, now)
+		for k := 0; k < 25; k++ {
+			now += 33
+			stepBullets(r, now, 1.0/30)
+		}
+	}
+	check(t, building.HP <= 0, "rockets level a building, hp %v", building.HP)
+	check(t, heli.Mines >= 1 && heli.Mines <= 5, "a building takes a handful of rockets, %v left", heli.Mines)
+
+	bridge := r.Bridges[0]
+	heli.Mines, heli.NextMine = Types["heli"].Mines, 0
+	heli.X, heli.Y = bridge.X+bridge.W/2, bridge.Y-200
+	for i := 0; bridge.HP > 0 && i < 8; i++ {
+		heli.Input.TargetX, heli.Input.TargetY = bridge.X+bridge.W/2, bridge.Y+bridge.H/2
+		fireHeliRocket(r, heli, now)
+		for k := 0; k < 25; k++ {
+			now += 33
+			stepBullets(r, now, 1.0/30)
+		}
+	}
+	check(t, bridge.HP <= 0, "rockets drop a bridge, hp %v", bridge.HP)
+}
+
+func TestHeliRocketRangeAndReload(t *testing.T) {
+	r := CreateRoom("HRNG", "")
+	heli := AddPlayer(r, "blue")
+	heli.Type, heli.Mines, heli.X, heli.Y = "heli", 8, 1000, 700
+	heli.Input.TargetX, heli.Input.TargetY = 2000, 700
+	fireHeliRocket(r, heli, 300_000)
+	fireHeliRocket(r, heli, 300_100)
+	check(t, len(r.Bullets) == 1, "reload blocks a second rocket")
+	b := r.Bullets[0]
+	check(t, math.Abs(hypot(b.TX-heli.X, b.TY-heli.Y)-Types["heli"].Range) < 1, "impact clamped to range")
+}
+
+func TestAATakesTwoBurstsForAHeli(t *testing.T) {
+	r := CreateRoom("AATWO", "")
+	r.Turrets = []*Turret{{ID: 1, Kind: "aa", Team: "blue", X: 400, Y: 700, HP: 160}, {ID: 2, Kind: "aa", Team: "blue", X: 400, Y: 760, HP: 160}}
+	AddPlayer(r, "blue")
+	heli := AddPlayer(r, "red")
+	heli.Type, heli.X, heli.Y, heli.HP = "heli", 800, 700, Types["heli"].HP
+	stepTurrets(r, 300_000)
+	check(t, len(r.Bullets) == 1, "second site holds fire while a missile is chasing, got %d", len(r.Bullets))
+	airburst(r, "blue", heli.X+60, heli.Y, AADamage, 300_000)
+	check(t, heli.Alive, "one burst does not kill, hp %v", heli.HP)
+	airburst(r, "blue", heli.X, heli.Y, AADamage, 300_100)
+	check(t, !heli.Alive, "second burst does")
+}
+
+func TestJeepNoLongerLaysMines(t *testing.T) {
+	r := CreateRoom("NOJEEP", "")
+	a := AddPlayer(r, "jeep")
+	clearTerrain(r)
+	a.Type, a.Mines, a.X, a.Y = "jeep", 3, 900, 300
+	SetInput(a, input(msg{"mine": true}))
+	Step(r, 720_000, Tick)
+	check(t, len(r.Mines) == 0, "only the ASV lays mines")
 }

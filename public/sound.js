@@ -100,7 +100,13 @@ export class Sound {
         this.noiseBurst({ x, y, volume: .35, dur: .07, freq: 2600, type: 'bandpass', q: 1.2 });
         break;
       case 'asv':
+      case 'hrocket':
         this.noiseBurst({ x, y, volume: .7, dur: .75, freq: 500, to: 2200, type: 'bandpass', q: 1.5, attack: .03 });
+        break;
+      case 'aa':
+        // Launch whoosh rising into a long rocket hiss.
+        this.noiseBurst({ x, y, volume: .9, dur: .35, freq: 1200, to: 300, attack: .01 });
+        this.noiseBurst({ x, y, volume: .55, dur: 1.4, freq: 400, to: 3000, type: 'bandpass', q: 1.8, attack: .08, delay: .05 });
         break;
       case 'grenade':
         this.noiseBurst({ x, y, volume: .3, dur: .22, freq: 700, to: 1500, type: 'bandpass', q: 2, attack: .03 });
@@ -115,6 +121,11 @@ export class Sound {
     const s = Math.max(.4, Math.min(2.6, scale || 1));
     this.noiseBurst({ x, y, volume: .9 + s * .35, dur: .7 + s * .45, freq: 900 + s * 300, to: 90, attack: .006 });
     this.tone({ x, y, volume: .5 + s * .2, freq: 85, to: 28, dur: .5 + s * .3 });
+  }
+
+  airburst(x, y) {
+    this.noiseBurst({ x, y, volume: 1.1, dur: .5, freq: 2600, to: 400, attack: .002 });
+    this.tone({ x, y, volume: .35, freq: 160, to: 60, dur: .3 });
   }
 
   splash(x, y) {

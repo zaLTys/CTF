@@ -135,6 +135,7 @@ type Flag struct {
 
 type Turret struct {
 	ID       int     `json:"id"`
+	Kind     string  `json:"kind"`
 	Team     string  `json:"team"`
 	X        float64 `json:"x"`
 	Y        float64 `json:"y"`
@@ -157,6 +158,7 @@ type Bullet struct {
 	ImpactAt float64
 	SX, SY   float64
 	TX, TY   float64
+	Target   string
 }
 
 type Explosion struct {
@@ -342,7 +344,11 @@ func newScenery(mapID string) []*Object {
 func newTurrets() []*Turret {
 	out := make([]*Turret, len(turretPositions))
 	for i, t := range turretPositions {
-		out[i] = &Turret{ID: i + 1, Team: t.team, X: t.x, Y: t.y, HP: 135}
+		hp := 135.0
+		if t.kind == "aa" {
+			hp = 160
+		}
+		out[i] = &Turret{ID: i + 1, Kind: t.kind, Team: t.team, X: t.x, Y: t.y, HP: hp}
 	}
 	return out
 }
@@ -521,7 +527,7 @@ func SetInput(p *Player, m map[string]any) {
 			return
 		}
 		base := Bases[p.Team]
-		if near(p.X, p.Y, base.X, base.Y, 155) {
+		if math.Abs(p.X-base.X) < 180 && math.Abs(p.Y-base.Y) < 162 {
 			p.Type, p.NextType = kind, kind
 			p.HP, p.Ammo, p.Fuel = t.HP, t.Ammo, t.Fuel
 			p.Mines, p.NextMine, p.MineLatch = t.Mines, 0, false
@@ -900,7 +906,7 @@ func fireBullet(r *Room, s shooter, now float64) {
 		ID: NewID(), Team: s.team, Kind: kind, OwnerID: s.ownerID,
 		X: s.x + math.Cos(s.angle)*muzzle, Y: s.y + math.Sin(s.angle)*muzzle,
 		VX: math.Cos(s.angle) * speed, VY: math.Sin(s.angle) * speed,
-		Damage: damage, Radius: radius, EndAt: now + life,
+		Damage: damage, Radius: radius, BornAt: now, EndAt: now + life,
 	})
 }
 
@@ -935,12 +941,44 @@ func throwGrenade(r *Room, p *Player, now float64) {
 	})
 }
 
-func layMine(r *Room, p *Player, now float64) {
-	if p.Type != "jeep" || p.Mines < 1 || now < p.NextMine {
+const (
+	HeliRocketDamage = 85.0
+	HeliRocketMs     = 600.0
+	HeliRocketSpeed  = 560.0
+)
+
+// fireHeliRocket dives a rocket from the helicopter onto the ground point under
+// the cursor (clamped to range). It bursts on impact and wrecks structures.
+// Helicopters carry their rockets in the Mines counter.
+func fireHeliRocket(r *Room, p *Player, now float64) {
+	t := Types["heli"]
+	if p.Mines < 1 || now < p.NextMine {
 		return
 	}
-	x := clamp(p.X-math.Cos(p.BodyAngle)*24, 18, Width-18)
-	y := clamp(p.Y-math.Sin(p.BodyAngle)*24, 18, Height-18)
+	dx, dy := p.Input.TargetX-p.X, p.Input.TargetY-p.Y
+	dist := hypot(dx, dy)
+	if dist > t.Range {
+		dx, dy, dist = dx*t.Range/dist, dy*t.Range/dist, t.Range
+	}
+	tx, ty := clamp(p.X+dx, 0, Width), clamp(p.Y+dy, 0, Height)
+	// The climb-down from altitude makes even a point-blank shot take a moment.
+	flight := 1000 * math.Max(.25, dist/HeliRocketSpeed)
+	r.Bullets = append(r.Bullets, &Bullet{
+		ID: NewID(), Team: p.Team, Kind: "hrocket", OwnerID: p.ID,
+		X: p.X, Y: p.Y, SX: p.X, SY: p.Y, TX: tx, TY: ty,
+		VX: (tx - p.X) / (flight / 1000), VY: (ty - p.Y) / (flight / 1000),
+		Damage: HeliRocketDamage, Radius: 6, BornAt: now, ImpactAt: now + flight, EndAt: now + flight,
+	})
+	p.Mines--
+	p.NextMine = now + HeliRocketMs
+}
+
+func layMine(r *Room, p *Player, now float64) {
+	if p.Type != "asv" || p.Mines < 1 || now < p.NextMine {
+		return
+	}
+	x := clamp(p.X-math.Cos(p.BodyAngle)*34, 18, Width-18)
+	y := clamp(p.Y-math.Sin(p.BodyAngle)*34, 18, Height-18)
 	if inWater(r, x, y) {
 		return
 	}
@@ -1224,7 +1262,9 @@ func stepPlayers(r *Room, now, dt float64) {
 		}
 		justMine := p.Input.Mine && !p.MineLatch
 		p.MineLatch = p.Input.Mine
-		if justMine {
+		if justMine && p.Type == "heli" {
+			fireHeliRocket(r, p, now)
+		} else if justMine {
 			layMine(r, p, now)
 		}
 		switch {
@@ -1268,8 +1308,8 @@ func stepPlayers(r *Room, now, dt float64) {
 			p.Fuel = math.Min(t.Fuel, p.Fuel+dt*17)
 			p.Ammo = math.Min(t.Ammo, p.Ammo+dt*12)
 			p.HP = math.Min(t.HP, p.HP+dt*24)
-			if p.Type == "jeep" {
-				p.Mines = math.Min(Types["jeep"].Mines, p.Mines+dt*1.2)
+			if t.Mines > 0 {
+				p.Mines = math.Min(t.Mines, p.Mines+dt*1.2)
 			}
 		}
 	}
@@ -1414,9 +1454,138 @@ func leadAngle(x, y float64, p *Player, speed float64) float64 {
 	return math.Atan2(dy+p.VY*t, dx+p.VX*t)
 }
 
+const (
+	AARange        = 640.0
+	AAReloadMs     = 2600.0
+	AAMissileSpeed = 340.0
+	AATurnRate     = 2.6
+	AALifeMs       = 3800.0
+	AAFuse         = 30.0
+	AABlast        = 80.0
+	AADamage       = 65.0
+)
+
+// aaInFlight reports whether the team already has a missile chasing this target,
+// so a helicopter faces one missile at a time rather than a simultaneous salvo.
+func aaInFlight(r *Room, team, target string) bool {
+	for _, b := range r.Bullets {
+		if b.Kind == "aa" && b.Team == team && b.Target == target {
+			return true
+		}
+	}
+	return false
+}
+
+// stepAA picks the nearest enemy helicopter or FPV drone and launches a homing
+// missile at it. Ground vehicles are ignored entirely.
+func stepAA(r *Room, t *Turret, now float64) {
+	targetID, best := "", AARange*AARange
+	var tx, ty float64
+	for _, p := range r.Players {
+		if p.Alive && p.Team != t.Team && p.Type == "heli" {
+			if d := dist2(t.X, t.Y, p.X, p.Y); d < best {
+				targetID, best = p.ID, d
+				a := leadAngle(t.X, t.Y, p, AAMissileSpeed)
+				tx, ty = t.X+math.Cos(a), t.Y+math.Sin(a)
+			}
+		}
+	}
+	for _, d := range r.Drones {
+		if d.Team != t.Team {
+			if dd := dist2(t.X, t.Y, d.X, d.Y); dd < best {
+				targetID, best, tx, ty = d.ID, dd, d.X, d.Y
+			}
+		}
+	}
+	if targetID == "" {
+		return
+	}
+	t.Angle = math.Atan2(ty-t.Y, tx-t.X)
+	if now < t.NextFire || aaInFlight(r, t.Team, targetID) {
+		return
+	}
+	t.NextFire = now + AAReloadMs
+	r.Bullets = append(r.Bullets, &Bullet{
+		ID: NewID(), Team: t.Team, Kind: "aa", Target: targetID,
+		X: t.X + math.Cos(t.Angle)*18, Y: t.Y + math.Sin(t.Angle)*18,
+		VX: math.Cos(t.Angle) * AAMissileSpeed, VY: math.Sin(t.Angle) * AAMissileSpeed,
+		Damage: AADamage, Radius: 6, BornAt: now, EndAt: now + AALifeMs,
+	})
+}
+
+// stepMissile steers an AA missile toward its target and reports whether it
+// has burst. It flies over walls and terrain and ignores ground vehicles.
+func stepMissile(r *Room, b *Bullet, now, dt float64) bool {
+	tx, ty, found := 0.0, 0.0, false
+	if p := r.Player(b.Target); p != nil && p.Alive {
+		tx, ty, found = p.X, p.Y, true
+	} else {
+		for _, d := range r.Drones {
+			if d.ID == b.Target {
+				tx, ty, found = d.X, d.Y, true
+			}
+		}
+	}
+	heading := math.Atan2(b.VY, b.VX)
+	if found {
+		turn := math.Atan2(math.Sin(math.Atan2(ty-b.Y, tx-b.X)-heading), math.Cos(math.Atan2(ty-b.Y, tx-b.X)-heading))
+		heading += clamp(turn, -AATurnRate*dt, AATurnRate*dt)
+	}
+	b.VX, b.VY = math.Cos(heading)*AAMissileSpeed, math.Sin(heading)*AAMissileSpeed
+	b.X += b.VX * dt
+	b.Y += b.VY * dt
+	fused := now >= b.EndAt
+	for _, p := range r.Players {
+		if p.Alive && p.Team != b.Team && p.Type == "heli" && near(b.X, b.Y, p.X, p.Y, AAFuse+Types["heli"].Radius) {
+			fused = true
+		}
+	}
+	for _, d := range r.Drones {
+		if d.Team != b.Team && near(b.X, b.Y, d.X, d.Y, AAFuse) {
+			fused = true
+		}
+	}
+	if fused {
+		airburst(r, b.Team, b.X, b.Y, b.Damage, now)
+	}
+	return fused
+}
+
+// airburst damages helicopters and knocks FPV drones out of the sky. Nothing
+// on the ground is hurt.
+func airburst(r *Room, team string, x, y, damage, now float64) {
+	boom(r, x, y, now, 1.25)
+	r.Explosions[len(r.Explosions)-1].Kind = "airburst"
+	for _, p := range r.Players {
+		if !p.Alive || p.Team == team || p.Type != "heli" {
+			continue
+		}
+		// Flat damage, so it always takes exactly two bursts to bring a helicopter down.
+		if near(p.X, p.Y, x, y, AABlast+Types["heli"].Radius) {
+			p.HP -= damage
+			if p.HP <= 0 {
+				kill(r, p, now)
+			}
+		}
+	}
+	drones := r.Drones[:0]
+	for _, d := range r.Drones {
+		if d.Team != team && near(d.X, d.Y, x, y, AABlast+10) {
+			boom(r, d.X, d.Y, now, .7)
+			continue
+		}
+		drones = append(drones, d)
+	}
+	r.Drones = drones
+}
+
 func stepTurrets(r *Room, now float64) {
 	for _, t := range r.Turrets {
 		if t.HP <= 0 {
+			continue
+		}
+		if t.Kind == "aa" {
+			stepAA(r, t, now)
 			continue
 		}
 		var target *Player
@@ -1441,14 +1610,24 @@ func stepTurrets(r *Room, now float64) {
 func stepBullets(r *Room, now, dt float64) {
 	var next []*Bullet
 	for _, b := range r.Bullets {
-		if b.Kind == "grenade" {
+		if b.Kind == "grenade" || b.Kind == "hrocket" {
 			span := math.Max(1, b.ImpactAt-b.BornAt)
 			flight := math.Min(1, (now-b.BornAt)/span)
 			b.X = b.SX + (b.TX-b.SX)*flight
 			b.Y = b.SY + (b.TY-b.SY)*flight
 			if now >= b.ImpactAt {
-				splash(r, b.Team, b.TX, b.TY, Types["jeep"].BlastRadius, b.Damage, now)
+				blast := Types["jeep"].BlastRadius
+				if b.Kind == "hrocket" {
+					blast = Types["heli"].BlastRadius
+				}
+				splash(r, b.Team, b.TX, b.TY, blast, b.Damage, now)
 			} else {
+				next = append(next, b)
+			}
+			continue
+		}
+		if b.Kind == "aa" {
+			if !stepMissile(r, b, now, dt) {
 				next = append(next, b)
 			}
 			continue
@@ -1586,16 +1765,18 @@ func stepFlags(r *Room, now float64) {
 func stepMines(r *Room, now float64) {
 	var live []Mine
 	for _, m := range r.Mines {
-		triggered := false
+		var victim *Player
 		if now >= m.ArmedAt {
 			for _, p := range r.Players {
-				if p.Alive && p.Team != m.Team && p.Type != "heli" && near(p.X, p.Y, m.X, m.Y, 30) {
-					triggered = true
+				if p.Alive && p.Team != m.Team && p.Type != "heli" && near(p.X, p.Y, m.X, m.Y, 12+Types[p.Type].Radius) {
+					victim = p
 					break
 				}
 			}
 		}
-		if triggered {
+		if victim != nil {
+			// Whatever drives over a mine is destroyed outright; the blast still hurts anything close by.
+			kill(r, victim, now)
 			splash(r, m.Team, m.X, m.Y, 86, 96, now)
 		} else {
 			live = append(live, m)

@@ -40,10 +40,10 @@ type VehicleType struct {
 }
 
 var Types = map[string]*VehicleType{
-	"jeep": {Label: "Recon Jeep", Speed: 330, Accel: 505, Brake: 570, Coast: 190, TurnRate: 3.65, Grip: 5.9, Reverse: .43, HP: 90, Ammo: 12, Fuel: 100, FireMs: 820, Damage: 58, BulletSpeed: 760, Radius: 17, Range: 360, BlastRadius: 74, Mines: 6},
+	"jeep": {Label: "Recon Jeep", Speed: 330, Accel: 505, Brake: 570, Coast: 190, TurnRate: 3.65, Grip: 5.9, Reverse: .43, HP: 90, Ammo: 12, Fuel: 100, FireMs: 820, Damage: 58, BulletSpeed: 760, Radius: 17, Range: 360, BlastRadius: 74},
 	"tank": {Label: "Battle Tank", Speed: 195, Accel: 290, Brake: 410, Coast: 160, TurnRate: 2.55, Grip: 8.4, Reverse: .53, HP: 220, Ammo: 40, Fuel: 100, FireMs: 500, Damage: 35, BulletSpeed: 630, Radius: 24},
-	"heli": {Label: "Attack Heli", Speed: 285, Accel: 385, Brake: 175, Coast: 100, TurnRate: 2.8, Grip: 1.2, Reverse: 1, HP: 125, Ammo: 150, Fuel: 100, FireMs: 125, Damage: 12, BulletSpeed: 780, Radius: 22},
-	"asv":  {Label: "Rocket ASV", Speed: 144, Accel: 185, Brake: 300, Coast: 130, TurnRate: 1.75, Grip: 7.1, Reverse: .36, HP: 270, Ammo: 25, Fuel: 100, FireMs: 800, Damage: 65, BulletSpeed: 510, Radius: 25},
+	"heli": {Label: "Attack Heli", Speed: 285, Accel: 385, Brake: 175, Coast: 100, TurnRate: 2.8, Grip: 1.2, Reverse: 1, HP: 125, Ammo: 150, Fuel: 100, FireMs: 150, Damage: 7, BulletSpeed: 780, Radius: 22, Range: 380, BlastRadius: 64, Mines: 8},
+	"asv":  {Label: "Rocket ASV", Speed: 182, Accel: 245, Brake: 320, Coast: 130, TurnRate: 2.05, Grip: 7.1, Reverse: .4, HP: 270, Ammo: 25, Fuel: 100, FireMs: 800, Damage: 65, BulletSpeed: 510, Radius: 25, Mines: 4},
 	"arty": {Label: "Field Artillery", Speed: 122, Accel: 160, Brake: 240, Coast: 120, TurnRate: 1.55, Grip: 7.4, Reverse: .35, HP: 160, Ammo: 12, Fuel: 100, FireMs: 2600, Damage: 145, Radius: 27, Range: 980, BlastRadius: 115},
 	"fpv":  {Label: "FPV Operator", Speed: 162, Accel: 300, Brake: 360, Coast: 165, TurnRate: 2.6, Grip: 6.7, Reverse: .5, HP: 110, Ammo: 5, Fuel: 100, FireMs: 900, Damage: 125, Radius: 22, BlastRadius: 95, Range: 640},
 }
@@ -274,10 +274,14 @@ var MapChoices = []MapChoice{
 type turretSpot struct {
 	team string
 	x, y float64
+	kind string
 }
 
+// Gun turrets cover the approaches; anti-air rocket sites sit in the back
+// corners of each HQ compound.
 var turretPositions = []turretSpot{
-	{"blue", 450, 520}, {"blue", 450, 920}, {"red", 1950, 520}, {"red", 1950, 920},
+	{"blue", 450, 520, "gun"}, {"blue", 450, 920, "gun"}, {"red", 1950, 520, "gun"}, {"red", 1950, 920, "gun"},
+	{"blue", 140, 615, "aa"}, {"blue", 140, 825, "aa"}, {"red", 2260, 615, "aa"}, {"red", 2260, 825, "aa"},
 }
 
 type wallPiece struct {

@@ -24,6 +24,15 @@
 @media(pointer:coarse){#actionButton{letter-spacing:0;font-size:9px}}
 @media(max-height:650px) and (pointer:coarse){#actionButton{bottom:198px}}
 
+/* Secondary weapon (heli rockets / jeep mines), just left of the fire button */
+#secondaryButton{display:none;position:absolute;pointer-events:auto;border:2px solid #ffd27a;background:#5b4a24dc;color:#fff4d0;font-size:8px;font-weight:950;line-height:1.15;border-radius:50%;box-shadow:0 5px 22px #0008;touch-action:none;user-select:none;padding:0}
+#secondaryButton:active{transform:scale(.94);background:#a7832f}
+#secondaryButton.empty{opacity:.45}
+@media(pointer:coarse){#secondaryButton{display:block;bottom:calc(206px + env(safe-area-inset-bottom));right:212px;width:52px;height:52px}}
+@media(max-width:580px) and (pointer:coarse){#secondaryButton{right:182px;bottom:calc(199px + env(safe-area-inset-bottom));width:46px;height:46px}}
+@media(max-height:650px) and (pointer:coarse){#secondaryButton{bottom:202px;right:184px;width:46px;height:46px}}
+#secondaryButton.off{display:none!important}
+
 /* v0.4 map selection */
 .map-chooser{display:block;width:min(100%,480px);margin:-8px 0 14px;color:var(--accent);font-size:10px;font-weight:850;letter-spacing:1.5px}
 .map-chooser span{display:block;margin-bottom:7px}

@@ -760,6 +760,26 @@ export class Renderer3D {
     const c = TEAM[t.team];
     g.add(box(50, 16, 50, mat(0x293a33, { rough: .8 }), 0, 8, 0), box(52, 2, 52, mat(c.flag, { rough: .5 }), 0, 16.5, 0));
     const head = new THREE.Group(); head.position.y = 18;
+    if (t.kind === 'aa') {
+      // Anti-air rocket site: a pitched launcher box of four missiles plus a small radar.
+      const steel = mat(0x5d6b60, { rough: .6, metal: .3 }), dark = mat(0x1b2621, { rough: .9 });
+      head.add(cyl(14, 16, 7, steel, 0, 3.5, 0), box(10, 14, 22, steel, -2, 13, 0));
+      const rack = new THREE.Group(); rack.position.set(2, 20, 0); rack.rotation.z = .55;
+      for (const z of [-7.5, 7.5]) {
+        rack.add(box(30, 12, 12, mat(c.body, { rough: .6 }), 6, 0, z));
+        for (const y of [-2.8, 2.8]) for (const dz of [-2.8, 2.8]) {
+          rack.add(cyl(2.2, 2.2, 1, dark, 21.2, y, z + dz, 10).rotateZ(Math.PI / 2));
+          rack.add(cyl(.1, 1.9, 4, mat(0xe8e4d6, { rough: .5 }), 23, y, z + dz, 10).rotateZ(-Math.PI / 2));
+        }
+      }
+      head.add(rack);
+      const radar = new THREE.Group(); radar.position.set(-12, 22, 0);
+      radar.add(cyl(.8, .8, 10, dark, 0, -3, 0, 8), box(2, 7, 16, steel, 0, 3, 0));
+      head.add(radar);
+      g.add(head);
+      g.userData = { head, radar, alive: true, rubble: null };
+      return g;
+    }
     head.add(cyl(15, 17, 10, mat(0x526b5a, { rough: .6, metal: .3 }), 0, 5, 0), box(34, 5, 5, mat(0x1b3027), 20, 6, 0), box(10, 4, 4, mat(0xd1d3b1), 36, 6, 0));
     g.add(head);
     g.userData = { head, alive: true, rubble: null };
@@ -783,15 +803,55 @@ export class Renderer3D {
       g.add(shadowed(new THREE.Mesh(new THREE.SphereGeometry(4.5, 10, 8), mat(0x6d7840, { rough: .6 }))));
       return g;
     }
-    const rocket = b.kind === 'asv';
-    const color = rocket ? 0xffb066 : b.kind === 'turret' ? 0xff8a6a : 0xfff0b8;
-    const m = new THREE.Mesh(new THREE.CapsuleGeometry(rocket ? 3.5 : 1.8, rocket ? 16 : 14, 2, 6), mat(color, { basic: true }));
+    if (b.kind === 'hrocket') {
+      const g = new THREE.Group();
+      const body = new THREE.Mesh(new THREE.CapsuleGeometry(2.6, 12, 3, 8), mat(0x3b4a3f, { basic: true }));
+      body.rotation.z = Math.PI / 2; g.add(body);
+      const flame = new THREE.Mesh(new THREE.ConeGeometry(3.2, 14, 8), mat(0xff8a2c, { opacity: .85, basic: true }));
+      flame.rotation.z = Math.PI / 2; flame.position.x = -14; g.add(flame);
+      return g;
+    }
+    if (b.kind === 'asv') {
+      // Unguided artillery rocket: olive body, warhead, fins, exhaust flame and a smoke trail.
+      const g = new THREE.Group();
+      const body = new THREE.Mesh(new THREE.CylinderGeometry(2.6, 2.6, 20, 10), mat(0x56603f, { basic: true }));
+      body.rotation.z = Math.PI / 2; g.add(body);
+      const tip = new THREE.Mesh(new THREE.ConeGeometry(2.6, 7, 10), mat(0xc9c2a2, { basic: true }));
+      tip.rotation.z = -Math.PI / 2; tip.position.x = 13.5; g.add(tip);
+      for (const r of [0, Math.PI / 2]) {
+        const fin = new THREE.Mesh(new THREE.BoxGeometry(5, 9, .8), mat(0x2f3527, { basic: true }));
+        fin.position.x = -8; fin.rotation.x = r; g.add(fin);
+      }
+      const flame = new THREE.Mesh(new THREE.ConeGeometry(3.6, 16, 8), mat(0xffa23c, { opacity: .9, basic: true }));
+      flame.rotation.z = Math.PI / 2; flame.position.x = -18; g.add(flame);
+      const puffs = [];
+      for (let i = 0; i < 8; i++) {
+        const puff = new THREE.Mesh(new THREE.IcosahedronGeometry(1, 0), mat(0xcfcbc0, { opacity: .5 - i * .05, basic: true }));
+        puff.position.x = -28 - i * 12; puff.scale.setScalar(3.5 + i * 1.8); g.add(puff); puffs.push(puff);
+      }
+      g.userData = { puffs, flame };
+      return g;
+    }
+    if (b.kind === 'aa') {
+      const g = new THREE.Group();
+      const body = new THREE.Mesh(new THREE.CapsuleGeometry(2.4, 14, 3, 8), mat(0xf2efe4, { basic: true }));
+      body.rotation.z = Math.PI / 2; g.add(body);
+      const tip = new THREE.Mesh(new THREE.ConeGeometry(2.5, 5, 8), mat(0xd8473a, { basic: true }));
+      tip.rotation.z = -Math.PI / 2; tip.position.x = 10; g.add(tip);
+      const flame = new THREE.Mesh(new THREE.ConeGeometry(3, 12, 8), mat(0xffc35a, { opacity: .85, basic: true }));
+      flame.rotation.z = Math.PI / 2; flame.position.x = -14; g.add(flame);
+      const puffs = [];
+      for (let i = 0; i < 6; i++) {
+        const puff = new THREE.Mesh(new THREE.IcosahedronGeometry(1, 0), mat(0xd9dcd6, { opacity: .45 - i * .06, basic: true }));
+        puff.position.x = -22 - i * 11; puff.scale.setScalar(3 + i * 1.6); g.add(puff); puffs.push(puff);
+      }
+      g.userData.puffs = puffs;
+      return g;
+    }
+    const color = b.kind === 'turret' ? 0xff8a6a : 0xfff0b8;
+    const m = new THREE.Mesh(new THREE.CapsuleGeometry(1.8, 14, 2, 6), mat(color, { basic: true }));
     m.rotation.z = Math.PI / 2;
     const g = new THREE.Group(); g.add(m);
-    if (rocket) {
-      const flame = new THREE.Mesh(new THREE.ConeGeometry(4, 18, 8), mat(0xff7a2c, { opacity: .7, basic: true }));
-      flame.rotation.z = Math.PI / 2; flame.position.x = -16; g.add(flame);
-    }
     return g;
   }
 
@@ -817,13 +877,17 @@ export class Renderer3D {
 
   makeMine(m) {
     const g = new THREE.Group();
-    g.add(cyl(6, 7, 3, mat(0x1c2618, { rough: .8 }), 0, 1.5, 0));
-    const light = box(3, 2, 3, mat(TEAM[m.team].flag, { emissive: TEAM[m.team].flag }), 0, 3.5, 0);
-    const halo = ringMesh(10, 12, TEAM[m.team].flag, .5);
+    const color = TEAM[m.team].flag;
+    g.add(cyl(7, 8, 3, mat(0x3a4034, { rough: .7, metal: .3 }), 0, 1.5, 0), cyl(3.5, 4, 1.4, mat(0x22261f), 0, 3.6, 0));
+    const lamp = new THREE.Mesh(new THREE.SphereGeometry(2.6, 12, 8), new THREE.MeshBasicMaterial({ color }));
+    lamp.position.y = 5;
+    const glow = new THREE.Mesh(new THREE.SphereGeometry(7, 12, 8), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: .4, depthWrite: false, blending: THREE.AdditiveBlending }));
+    glow.position.y = 5;
+    const halo = ringMesh(13, 16, color, .5);
     halo.material = halo.material.clone();
-    halo.position.y = .7;
-    g.add(light, halo);
-    g.userData = { halo };
+    halo.position.y = .8; halo.renderOrder = 3;
+    g.add(lamp, glow, halo);
+    g.userData = { lamp, glow, halo, phase: Math.random() * 1000 };
     return g;
   }
 
@@ -849,7 +913,7 @@ export class Renderer3D {
   }
 
   updateCamera(focusX, focusY, rush, droneMode, dtMs, zoom = 1) {
-    const blend = 1 - Math.exp(-dtMs / 170);
+    const blend = 1 - Math.exp(-dtMs / 110);
     // Speed swings constantly while steering, so zoom follows a slow average of it.
     this.rush = (this.rush || 0) + (rush - (this.rush || 0)) * (1 - Math.exp(-dtMs / 1400));
     const desired = this.baseDistance() * (droneMode ? .82 : (1 + .75 * this.rush) * zoom);
@@ -882,18 +946,31 @@ export class Renderer3D {
       const old = prevById.get(p.id);
       if (!old || !old.alive || !p.alive) return p;
       return { ...p, x: lerp(old.x, p.x, alpha), y: lerp(old.y, p.y, alpha),
+        vx: lerp(old.vx || 0, p.vx || 0, alpha), vy: lerp(old.vy || 0, p.vy || 0, alpha),
         angle: lerpAngle(old.angle, p.angle, alpha), bodyAngle: lerpAngle(old.bodyAngle, p.bodyAngle, alpha) };
     };
     const players = game.players.map(smooth);
     const me = players.find(p => p.id === selfId);
-    const drone = game.drones?.find(d => d.ownerId === selfId);
+    const prevDrones = new Map((previous?.drones || []).map(d => [d.id, d]));
+    const drones = (game.drones || []).map(d => {
+      const old = prevDrones.get(d.id);
+      return old ? { ...d, x: lerp(old.x, d.x, alpha), y: lerp(old.y, d.y, alpha), angle: lerpAngle(old.angle, d.angle, alpha) } : d;
+    });
+    const drone = drones.find(d => d.ownerId === selfId);
 
     if (me) {
       const top = Math.max(80, this.world.types[me.type]?.speed || 220);
       const rush = Math.min(1, Math.hypot(me.vx || 0, me.vy || 0) / top);
       const lead = .3 + (this.rush || 0) * .55;
-      let fx = drone ? drone.x + Math.cos(drone.angle) * 90 : me.x + (me.vx || 0) * lead;
-      let fy = drone ? drone.y + Math.sin(drone.angle) * 90 : me.y + (me.vy || 0) * lead;
+      // The look-ahead swings with every steering input, so it eases in on its own slower clock.
+      const leadX = drone ? Math.cos(drone.angle) * 90 : (me.vx || 0) * lead;
+      const leadY = drone ? Math.sin(drone.angle) * 90 : (me.vy || 0) * lead;
+      const ease = 1 - Math.exp(-dtMs / 450);
+      this.lead = this.lead || { x: leadX, y: leadY };
+      this.lead.x += (leadX - this.lead.x) * ease;
+      this.lead.y += (leadY - this.lead.y) * ease;
+      let fx = (drone ? drone.x : me.x) + this.lead.x;
+      let fy = (drone ? drone.y : me.y) + this.lead.y;
       let zoom = 1;
       if (me.type === 'arty') {
         // Close while limbered; once planted the view keeps opening up toward the aim.
@@ -923,6 +1000,7 @@ export class Renderer3D {
     this.turrets.sync(game.turrets || [], t => t.id, (g, t) => {
       const alive = t.hp > 0;
       g.userData.head.rotation.y = -t.angle;
+      if (g.userData.radar && alive) g.userData.radar.rotation.y = time / 500;
       if (g.userData.alive !== alive) {
         g.userData.alive = alive;
         g.userData.head.rotation.z = alive ? 0 : .5;
@@ -994,7 +1072,7 @@ export class Renderer3D {
       paintLabel(data.label, mine ? 'YOU' : ally ? 'ALLY' : 'ENEMY', color, p.hp / (this.world.types[p.type]?.hp || 100));
       data.label.position.set(0, 62 + (altitude ? 10 : 0), 0);
     });
-    this.drones.sync(game.drones || [], d => d.id, (g, d) => {
+    this.drones.sync(drones, d => d.id, (g, d) => {
       g.position.set(d.x, DRONE_ALTITUDE + Math.sin(time / 160) * 1.5, d.y);
       g.userData.group.rotation.y = -d.angle;
       g.userData.group.rotation.z = -.18;
@@ -1002,13 +1080,43 @@ export class Renderer3D {
     });
     for (const team of ['blue', 'red']) this.updateFlag(this.flags[team], game.flags[team], players, time);
 
-    const since = Math.max(0, serverNow - game.time) / 1000;
+    const since = Math.max(-100, serverNow - game.time) / 1000;
     this.bulletPool.sync(game.bullets || [], b => b.id, (g, b) => {
       if (b.kind === 'grenade') {
         const span = Math.max(1, (b.impactAt || 0) - (b.bornAt || 0));
         const t = Math.max(0, Math.min(1, (serverNow - (b.bornAt || serverNow)) / span));
         const ahead = t >= 1 ? 0 : since;
         g.position.set(b.x + b.vx * ahead, 6 + Math.sin(t * Math.PI) * 70, b.y + b.vy * ahead);
+        return;
+      }
+      if (b.kind === 'hrocket') {
+        // Straight dive from the helicopter's altitude to the impact point.
+        const span = Math.max(1, (b.impactAt || 0) - (b.bornAt || 0));
+        const t = Math.max(0, Math.min(1, (serverNow - (b.bornAt || serverNow)) / span));
+        const ahead = t >= 1 ? 0 : since;
+        const height = ALTITUDE.heli - 6;
+        g.position.set(b.x + b.vx * ahead, 2 + height * (1 - t), b.y + b.vy * ahead);
+        const run = Math.hypot(b.vx, b.vy) * span / 1000;
+        g.rotation.set(0, -Math.atan2(b.vy, b.vx), -Math.atan2(height, Math.max(1, run)));
+        return;
+      }
+      if (b.kind === 'aa') {
+        // Missiles climb off the rail to helicopter height within the first half second.
+        const age = Math.max(0, serverNow - (b.bornAt || serverNow));
+        const climb = smoothstep(Math.min(1, age / 550));
+        g.position.set(b.x + b.vx * since, 22 + climb * (ALTITUDE.heli - 16), b.y + b.vy * since);
+        g.rotation.set(0, -Math.atan2(b.vy, b.vx), (1 - climb) * .5);
+        g.userData.puffs.forEach((p, i) => { p.visible = age > 60 * (i + 1); });
+        return;
+      }
+      if (b.kind === 'asv') {
+        // Leaves the raised launcher pod, then settles into a flat run toward the target.
+        const age = Math.max(0, serverNow - (b.bornAt || serverNow));
+        const settle = smoothstep(Math.min(1, age / 260));
+        g.position.set(b.x + b.vx * since, 26 - settle * 10, b.y + b.vy * since);
+        g.rotation.set(0, -Math.atan2(b.vy, b.vx), (1 - settle) * -.25);
+        g.userData.puffs.forEach((p, i) => { p.visible = age > 35 * (i + 1); });
+        g.userData.flame.scale.set(1, .8 + Math.random() * .5, 1);
         return;
       }
       g.position.set(b.x + b.vx * since, b.kind === 'heli' ? 40 : 12, b.y + b.vy * since);
@@ -1018,7 +1126,9 @@ export class Renderer3D {
       const progress = Math.max(0, Math.min(1, (serverNow - e.bornAt) / Math.max(1, e.until - e.bornAt)));
       const s = e.scale || 1, { fire, smoke, wave } = g.userData;
       const splash = e.kind === 'splash';
-      g.position.set(e.x, 0, e.y);
+      // Airbursts hang at helicopter height: a flash and a dark flak puff, no ground shockwave.
+      g.position.set(e.x, e.kind === 'airburst' ? ALTITUDE.heli - 14 : 0, e.y);
+      wave.visible = e.kind !== 'airburst';
       fire.scale.setScalar((10 + progress * 46) * s); fire.position.y = (8 + progress * 22) * s;
       fire.material.opacity = splash ? 0 : Math.max(0, .95 * (1 - progress * 1.3));
       fire.material.color.setHSL(.08 - progress * .06, 1, .62 - progress * .3);
@@ -1035,7 +1145,13 @@ export class Renderer3D {
     });
     this.minePool.sync((game.mines || []).filter(m => m.team === this.selfTeam), m => m.id, (g, m) => {
       g.position.set(m.x, 0, m.y);
-      g.userData.halo.material.opacity = .25 + (Math.sin(time / 180) * .5 + .5) * .35;
+      // Friendly-only beacon: a sharp blink once a second plus an expanding ripple.
+      const u = g.userData, cycle = ((time + u.phase) % 1000) / 1000;
+      const on = cycle < .28;
+      u.lamp.material.color.setHex(on ? TEAM[m.team].flag : 0x2c3a3c);
+      u.glow.visible = on;
+      u.halo.scale.setScalar(.6 + cycle * .9);
+      u.halo.material.opacity = .75 * (1 - cycle);
     });
     this.strikePool.sync(game.strikes || [], s => s.id, (ring, s) => {
       const pulse = 1 + Math.sin(time / 90) * .05;
@@ -1079,6 +1195,16 @@ export class Renderer3D {
       if (dist < 56) { dx = dx / dist * 56; dy = dy / dist * 56; dist = 56; }
       if (dist > t.range) { dx *= t.range / dist; dy *= t.range / dist; }
       this.reticle.position.set(me.x + dx, 1.4, me.y + dy);
+    } else if (selfType === 'heli') {
+      // Faint ring where a right-click rocket would land; dimmer still when out of rockets.
+      const t = world.types.heli;
+      let dx = target.x - me.x, dy = target.y - me.y;
+      const dist = Math.hypot(dx, dy) || 1;
+      if (dist > t.range) { dx *= t.range / dist; dy *= t.range / dist; }
+      sizeRing('aim', this.aimRing, t.blastRadius, 2);
+      this.aimRing.material = mat(0xffb066, { opacity: me.mines >= 1 ? .5 : .15, basic: true });
+      this.aimRing.position.set(me.x + dx, 1.4, me.y + dy);
+      this.aimRing.visible = true;
     } else if (selfType === 'arty') {
       const t = world.types.arty;
       const d = Math.hypot(target.x - me.x, target.y - me.y);

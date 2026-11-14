@@ -7,6 +7,16 @@ const overlay = $('overlay'), octx = overlay.getContext('2d');
 const radar = $('radar'), rctx = radar.getContext('2d');
 const lobby = $('lobby'), hud = $('hud');
 let ws, world, game, previous, selfId, selfTeam, code, receivedAt = 0, serverOffset = 0;
+// Recent snapshots; the scene is drawn slightly in the past so there is always a pair to blend between.
+const snapshots = [];
+const INTERP_DELAY_MS = 80;
+function interpolationPair(renderTime) {
+  for (let i = snapshots.length - 1; i > 0; i--) {
+    const a = snapshots[i - 1], b = snapshots[i];
+    if (a.time <= renderTime) return { from: a, to: b, alpha: Math.max(0, Math.min(1, (renderTime - a.time) / Math.max(1, b.time - a.time))) };
+  }
+  return { from: snapshots[0] || game, to: snapshots[1] || game, alpha: 0 };
+}
 let vw = 1, vh = 1, dpr = 1;
 let lastToast = 0, mouseWorld = null, pointerScreen = null, touchRange = 650, lastFrame = 0;
 const keyboard = new Set();
@@ -64,6 +74,7 @@ function connect() {
     try { data = JSON.parse(event.data); } catch { return; }
     if (data.type === 'error') { message(data.message.toUpperCase()); toast(data.message); return; }
     if (data.type === 'welcome') {
+      snapshots.length = 0;
       world = data.world; selfId = data.id; selfTeam = data.team; code = data.code; input.aim = selfTeam === 'blue' ? 0 : Math.PI;
       lobby.classList.add('hidden'); hud.classList.remove('hidden');
       $('roomLabel').textContent = `ROOM ${code} · ${world.mapName}`;
@@ -75,7 +86,12 @@ function connect() {
       previous = game;
       game = data;
       receivedAt = performance.now();
-      serverOffset = data.time - receivedAt;
+      // Network jitter makes each sample noisy; the clock estimate drifts toward it slowly.
+      const sample = data.time - receivedAt;
+      serverOffset = snapshots.length ? serverOffset + (sample - serverOffset) * .06 : sample;
+      if (Math.abs(sample - serverOffset) > 250) serverOffset = sample;
+      snapshots.push(data);
+      if (snapshots.length > 8) snapshots.shift();
       soundEvents(previous, game);
       updateHud();
     }
@@ -104,7 +120,7 @@ function chooseVehicle(type) {
   sound.click();
   if (!p.alive) { send({ type: 'vehicle', vehicle: type }); return toast(`Respawning as ${label}`); }
   const base = world.bases[selfTeam];
-  if (Math.hypot(p.x - base.x, p.y - base.y) > 155) return toast('Return to your base to change vehicles');
+  if (Math.abs(p.x - base.x) > 180 || Math.abs(p.y - base.y) > 162) return toast('Return to your base to change vehicles');
   send({ type: 'vehicle', vehicle: type });
 }
 const vehicleKeys = { Digit1: 'jeep', Digit2: 'tank', Digit3: 'heli', Digit4: 'asv', Digit5: 'arty', Digit6: 'fpv' };
@@ -149,7 +165,7 @@ function soundEvents(prev, next) {
     seen.clear(); for (const id of ids) seen.add(id);
   };
   fresh(next.bullets, heard.bullets, b => sound.shot(b.kind, b.x, b.y));
-  fresh(next.explosions, heard.explosions, e => e.kind === 'splash' ? sound.splash(e.x, e.y) : sound.explosion(e.scale, e.x, e.y));
+  fresh(next.explosions, heard.explosions, e => e.kind === 'splash' ? sound.splash(e.x, e.y) : e.kind === 'airburst' ? sound.airburst(e.x, e.y) : sound.explosion(e.scale, e.x, e.y));
   fresh(next.strikes, heard.strikes, s => {
     const owner = next.players.find(p => p.id === s.ownerId);
     sound.artillery(owner?.x ?? s.x, owner?.y ?? s.y, s.x, s.y, s.impactAt - next.time);
@@ -162,7 +178,7 @@ function soundEvents(prev, next) {
   const was = prev.players.find(p => p.id === selfId), me = next.players.find(p => p.id === selfId);
   if (me && was && me.deploy !== was.deploy && (me.deploy === 'deploying' || me.deploy === 'packing')) sound.deploy();
 }
-window.addEventListener('blur', () => { keyboard.clear(); input.fire = false; touch.moving = false; touch.aiming = false; });
+window.addEventListener('blur', () => { keyboard.clear(); input.fire = false; input.secondary = false; touch.moving = false; touch.aiming = false; });
 
 function aimOrigin() {
   const p = self();
@@ -185,14 +201,23 @@ canvas.addEventListener('pointerdown', e => {
   if (!world || e.pointerType === 'touch') return;
   pointerScreen = { x: e.clientX, y: e.clientY };
   refreshMouseAim();
-  input.fire = true;
+  if (e.button === 2) input.secondary = true;
+  else input.fire = true;
 });
-window.addEventListener('pointerup', e => { if (e.pointerType !== 'touch') input.fire = false; });
-window.addEventListener('pointercancel', () => { input.fire = false; });
+// Pointer events only report the first button pressed, so the right button is tracked with mouse events.
+canvas.addEventListener('mousedown', e => { if (e.button === 2) input.secondary = true; });
+window.addEventListener('mouseup', e => { if (e.button === 2) input.secondary = false; });
+window.addEventListener('pointerup', e => { if (e.pointerType !== 'touch' && e.button !== 2) input.fire = false; });
+window.addEventListener('pointercancel', () => { input.fire = false; input.secondary = false; });
 const action = $('actionButton');
 if (action) {
   action.addEventListener('pointerdown', e => { e.preventDefault(); action.setPointerCapture(e.pointerId); input.fire = true; });
   for (const event of ['pointerup', 'pointercancel', 'lostpointercapture']) action.addEventListener(event, () => { input.fire = false; });
+}
+const secondary = $('secondaryButton');
+if (secondary) {
+  secondary.addEventListener('pointerdown', e => { e.preventDefault(); input.secondary = true; secondary.setPointerCapture(e.pointerId); });
+  for (const event of ['pointerup', 'pointercancel', 'lostpointercapture']) secondary.addEventListener(event, () => { input.secondary = false; });
 }
 window.addEventListener('contextmenu', e => e.preventDefault());
 function bindStick(id, handler, release) {
@@ -239,6 +264,14 @@ function updateHud() {
   const remoteDrone = game.drones?.find(d => d.ownerId === selfId);
   const artyAction = { deploying: 'DEPLOYING', deployed: 'STRIKE', packing: 'RE-DEPLOY' }[p.deploy] || 'DEPLOY';
   $('actionButton').textContent = p.type === 'fpv' ? (remoteDrone ? 'DETONATE' : 'LAUNCH') : p.type === 'arty' ? artyAction : p.type === 'jeep' ? 'THROW' : 'FIRE';
+  const secondaryUse = p.alive && { heli: 'ROCKET', asv: 'MINE' }[p.type];
+  const sb = $('secondaryButton');
+  sb.classList.toggle('off', !secondaryUse);
+  if (secondaryUse) {
+    const left = Math.floor(p.mines ?? 0);
+    sb.innerHTML = `${secondaryUse}<br>${left}`;
+    sb.classList.toggle('empty', left < 1);
+  }
   const deployPct = Math.round(deployProgress(p, game.time) * 100);
   const artyStatus = {
     deploying: `DEPLOYING ${deployPct}% · HOLD STILL`,
@@ -248,9 +281,10 @@ function updateHud() {
   const link = remoteDrone ? Math.max(0, world.types.fpv.range - Math.hypot(remoteDrone.x - p.x, remoteDrone.y - p.y)) : world.types.fpv.range;
   $('unitStatus').textContent = p.type === 'fpv' ? (remoteDrone ? `DRONE LIVE · ${Math.ceil((remoteDrone.expiresAt - game.time) / 1000)}s · LINK ${Math.round(link)}` : `READY TO LAUNCH · LINK ${world.types.fpv.range}`)
     : p.type === 'arty' ? artyStatus
-    : p.type === 'jeep' ? `FLAG CARRIER · GRENADES AIM FREELY · MINES ${p.mines ?? 0} (F)`
+    : p.type === 'jeep' ? 'FLAG CARRIER · GRENADES AIM FREELY'
     : p.type === 'tank' ? 'CANNON FOLLOWS THE TURRET'
-    : p.type === 'asv' ? 'ROCKETS LEAVE ALONG THE HULL'
+    : p.type === 'asv' ? `ROCKETS LEAVE ALONG THE HULL · MINES ${Math.floor(p.mines ?? 0)} (RIGHT CLICK / F)`
+    : p.type === 'heli' ? `MACHINE GUN · GROUND ROCKETS ${Math.floor(p.mines ?? 0)} (RIGHT CLICK / F)`
     : 'RETURN TO BASE FOR REPAIR + RESUPPLY';
   const speed = Math.round(Math.hypot(p.vx || 0, p.vy || 0));
   $('physicsStatus').textContent = `${world.mapName} · ${p.type === 'heli' ? 'AIRBORNE' : (p.surface || 'GRASS').toUpperCase()} · SPEED ${speed} · ${input.driveMode === 'classic' ? 'HULL' : 'SCREEN'} DRIVE`;
@@ -301,9 +335,9 @@ function render(time) {
     input.aim = Math.atan2(wy, wx);
   } else refreshMouseAim();
   const p = self();
-  const alpha = Math.max(0, Math.min(1, (time - receivedAt) / 50));
-  const serverNow = performance.now() + serverOffset;
-  renderer.frame({ game, previous, alpha, serverNow, selfId, time, mouseWorld, target: aimTarget(p) });
+  const renderTime = performance.now() + serverOffset - INTERP_DELAY_MS;
+  const pair = interpolationPair(renderTime);
+  renderer.frame({ game: pair.to, previous: pair.from, alpha: pair.alpha, serverNow: renderTime, selfId, time, mouseWorld, target: aimTarget(p) });
   sound.setListener(renderer.focus.x, renderer.focus.z, renderer.yaw);
   const myDrone = game.drones?.find(d => d.ownerId === selfId);
   sound.engine({ type: p?.type, alive: !!p?.alive, speed: Math.hypot(p?.vx || 0, p?.vy || 0), top: world.types[p?.type]?.speed, swimming: p?.surface === 'water', drone: !!myDrone });
@@ -352,7 +386,12 @@ function drawRadar() {
     rctx.fillStyle = colors[side]; const b = world.bases[side]; rctx.fillRect(b.x * x - 4, b.y * y - 4, 8, 8);
     const f = game.flags[side]; rctx.beginPath(); rctx.arc(f.x * x, f.y * y, 3, 0, Math.PI * 2); rctx.fill();
   }
-  for (const t of game.turrets) { if (t.hp <= 0) continue; rctx.fillStyle = colors[t.team]; rctx.fillRect(t.x * x - 1, t.y * y - 1, 3, 3); }
+  for (const t of game.turrets) {
+    if (t.hp <= 0) continue;
+    rctx.fillStyle = colors[t.team];
+    if (t.kind === 'aa') { rctx.beginPath(); rctx.moveTo(t.x * x, t.y * y - 3); rctx.lineTo(t.x * x + 3, t.y * y + 2); rctx.lineTo(t.x * x - 3, t.y * y + 2); rctx.fill(); }
+    else rctx.fillRect(t.x * x - 1, t.y * y - 1, 3, 3);
+  }
   for (const d of game.drones ?? []) { rctx.fillStyle = d.ownerId === selfId ? '#fcfaab' : colors[d.team]; rctx.beginPath(); rctx.arc(d.x * x, d.y * y, 4, 0, 6.283); rctx.fill(); }
   for (const s of game.strikes ?? []) { rctx.strokeStyle = '#ffca72'; rctx.beginPath(); rctx.arc(s.x * x, s.y * y, 5, 0, 6.283); rctx.stroke(); }
   for (const p of game.players) { if (!p.alive) continue; rctx.fillStyle = p.id === selfId ? '#ffffff' : colors[p.team]; rctx.beginPath(); rctx.arc(p.x * x, p.y * y, p.id === selfId ? 4 : 3, 0, Math.PI * 2); rctx.fill(); }
@@ -376,6 +415,6 @@ setInterval(() => {
   input.dx = dx; input.dy = dy;
   const p = self();
   const target = aimTarget(p) || { x: 1200, y: 720 };
-  send({ type: 'input', ...input, targetX: target.x, targetY: target.y, fire: input.fire || k.has('Space'), mine: k.has('KeyF') });
+  send({ type: 'input', ...input, targetX: target.x, targetY: target.y, fire: input.fire || k.has('Space'), mine: k.has('KeyF') || !!input.secondary });
 }, 50);
 requestAnimationFrame(render);
