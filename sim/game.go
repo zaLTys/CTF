@@ -319,8 +319,26 @@ func newObstacles(m *MapDef) []*Object {
 			out = append(out, &Object{ID: id, Kind: kind, Team: team, X: p.X, Y: p.Y, W: p.W, H: p.H, HP: hp, MaxHP: hp})
 			id++
 		}
+		b := Bases[team]
+		out = append(out, &Object{ID: 400 + len(out), Kind: "hq", Team: team, X: b.X - HQSize/2, Y: b.Y - HQSize/2, W: HQSize, H: HQSize, HP: HQHP, MaxHP: HQHP})
 	}
 	return out
+}
+
+const (
+	// The flag flies from the roof of its team's HQ; an enemy jeep can only take it
+	// once the building is destroyed.
+	HQSize = 72.0
+	HQHP   = 380.0
+)
+
+func hqStanding(r *Room, team string) bool {
+	for _, o := range r.Obstacles {
+		if o.Kind == "hq" && o.Team == team {
+			return o.HP > 0
+		}
+	}
+	return false
 }
 
 func newBridges(m *MapDef) []*Object {
@@ -348,7 +366,11 @@ func newTurrets() []*Turret {
 		if t.kind == "aa" {
 			hp = 160
 		}
-		out[i] = &Turret{ID: i + 1, Kind: t.kind, Team: t.team, X: t.x, Y: t.y, HP: hp}
+		facing := 0.0
+		if t.team == "red" {
+			facing = math.Pi
+		}
+		out[i] = &Turret{ID: i + 1, Kind: t.kind, Team: t.team, X: t.x, Y: t.y, HP: hp, Angle: facing}
 	}
 	return out
 }
@@ -435,6 +457,37 @@ func AddPlayer(r *Room, id string) *Player {
 	r.Players = append(r.Players, p)
 	r.UpdatedAt = nowMs()
 	return p
+}
+
+// SwitchTeam moves p to the other side and respawns it at that HQ. Wrecks, mines
+// and everything else already on the field stay where they are. It reports an
+// error message when the other team is already full.
+func SwitchTeam(r *Room, p *Player) string {
+	team, members := enemyOf(p.Team), 0
+	for _, q := range r.Players {
+		if q.Team == team {
+			members++
+		}
+	}
+	if members >= 2 {
+		return "The " + team + " team already has two players."
+	}
+	for _, t := range []string{"blue", "red"} {
+		if r.Flags[t].CarriedBy == p.ID {
+			resetFlag(r, t)
+		}
+	}
+	drones := r.Drones[:0]
+	for _, d := range r.Drones {
+		if d.OwnerID != p.ID {
+			drones = append(drones, d)
+		}
+	}
+	r.Drones = drones
+	p.Team = team
+	spawn(r, p)
+	r.UpdatedAt = nowMs()
+	return ""
 }
 
 func resetFlag(r *Room, team string) {
@@ -555,42 +608,112 @@ type hit struct {
 
 func (h *hit) cleared() bool { return h.obj != nil && h.obj.HP == 0 }
 
-func collisionAt(r *Room, p *Player, x, y float64) *hit {
+// contact is one overlap between a vehicle and something solid. The normal points
+// away from the obstacle; round contacts (trees, rocks, wrecks, vehicles and box
+// corners) deflect a vehicle sideways instead of stopping it dead.
+type contact struct {
+	hit
+	nx, ny, depth float64
+	round         bool
+}
+
+const (
+	// ContactSlop is the share of a vehicle's radius that may overlap cover before it
+	// is pushed out hard, so hulls squeeze through gaps slightly narrower than they are.
+	ContactSlop = .2
+	// ContactSlip is how strongly a head-on push against a round surface turns into a
+	// sideways slide around it.
+	ContactSlip = .5
+	// ContactBounce is the share of the impact speed returned off the surface.
+	ContactBounce = .11
+	// MaxPushOut caps the correction per pass so a vehicle buried in restored cover
+	// eases out over a few ticks rather than teleporting.
+	MaxPushOut = 8.0
+)
+
+func circleContact(h hit, x, y, ox, oy, minDist float64) (contact, bool) {
+	dx, dy := x-ox, y-oy
+	d := hypot(dx, dy)
+	if d >= minDist {
+		return contact{}, false
+	}
+	if d < 1e-6 {
+		dx, dy, d = 1, 0, 1
+	}
+	return contact{hit: h, nx: dx / d, ny: dy / d, depth: minDist - d, round: true}, true
+}
+
+func rectContact(h hit, x, y, rad float64, rc Rect) (contact, bool) {
+	cx, cy := clamp(x, rc.X, rc.X+rc.W), clamp(y, rc.Y, rc.Y+rc.H)
+	dx, dy := x-cx, y-cy
+	if d := hypot(dx, dy); d > 1e-6 {
+		if d >= rad {
+			return contact{}, false
+		}
+		return contact{hit: h, nx: dx / d, ny: dy / d, depth: rad - d, round: dx != 0 && dy != 0}, true
+	}
+	// Centre inside the box: leave through the nearest face.
+	c := contact{hit: h, nx: -1, depth: x - rc.X}
+	if e := rc.X + rc.W - x; e < c.depth {
+		c.nx, c.ny, c.depth = 1, 0, e
+	}
+	if e := y - rc.Y; e < c.depth {
+		c.nx, c.ny, c.depth = 0, -1, e
+	}
+	if e := rc.Y + rc.H - y; e < c.depth {
+		c.nx, c.ny, c.depth = 0, 1, e
+	}
+	c.depth += rad
+	return c, true
+}
+
+func contactsAt(r *Room, p *Player, x, y float64) []contact {
 	rad := Types[p.Type].Radius
 	lo, hiX, hiY := rad, Width-rad, Height-rad
 	if p.Type == "jeep" {
 		lo, hiX, hiY = lo-SeaMargin, hiX+SeaMargin, hiY+SeaMargin
 	}
-	if x < lo || y < lo || x > hiX || y > hiY {
-		return &hit{kind: "edge"}
+	var out []contact
+	edge := hit{kind: "edge"}
+	if x < lo {
+		out = append(out, contact{hit: edge, nx: 1, depth: lo - x})
+	} else if x > hiX {
+		out = append(out, contact{hit: edge, nx: -1, depth: x - hiX})
+	}
+	if y < lo {
+		out = append(out, contact{hit: edge, ny: 1, depth: lo - y})
+	} else if y > hiY {
+		out = append(out, contact{hit: edge, ny: -1, depth: y - hiY})
 	}
 	if p.Type == "heli" {
-		return nil
+		return out
+	}
+	add := func(c contact, ok bool) {
+		if ok {
+			out = append(out, c)
+		}
 	}
 	for _, q := range r.Players {
-		if q.ID != p.ID && q.Alive && hypot(q.X-x, q.Y-y) < Types[q.Type].Radius+rad-1 {
-			return &hit{kind: "vehicle", vehicle: q}
+		if q.ID != p.ID && q.Alive && q.Type != "heli" {
+			add(circleContact(hit{kind: "vehicle", vehicle: q}, x, y, q.X, q.Y, Types[q.Type].Radius+rad-1))
 		}
 	}
 	for _, w := range r.Wrecks {
-		if w.HP > 0 && hypot(w.X-x, w.Y-y) < w.Radius+rad-3 {
-			return &hit{kind: w.Kind, obj: w}
+		if w.HP > 0 {
+			add(circleContact(hit{kind: w.Kind, obj: w}, x, y, w.X, w.Y, w.Radius+rad-3))
 		}
 	}
 	for _, o := range r.Obstacles {
-		if o.HP <= 0 || (o.Kind == "gate" && o.Team == p.Team) {
-			continue
-		}
-		if circleRect(x, y, rad, o.rect()) {
-			return &hit{kind: o.Kind, obj: o}
+		if o.HP > 0 && !(o.Kind == "gate" && o.Team == p.Team) {
+			add(rectContact(hit{kind: o.Kind, obj: o}, x, y, rad, o.rect()))
 		}
 	}
 	for _, c := range r.Scenery {
-		if c.HP > 0 && hypot(c.X-x, c.Y-y) < c.Radius+rad {
-			return &hit{kind: c.Kind, obj: c}
+		if c.HP > 0 {
+			add(circleContact(hit{kind: c.Kind, obj: c}, x, y, c.X, c.Y, c.Radius+rad))
 		}
 	}
-	return nil
+	return out
 }
 
 // inWater reports whether a ground vehicle centred at (x, y) would be afloat: out
@@ -670,6 +793,11 @@ func damageObject(r *Room, o *Object, damage, now float64) {
 		boom(r, o.X+o.W/2, o.Y+o.H/2, now, 1.3)
 		r.Announcement = upper(o.Team) + " " + upper(o.Kind) + " BREACHED"
 		r.AnnouncementUntil = now + 2000
+	case o.Kind == "hq" && o.HP == 0 && before > 0:
+		boom(r, o.X+o.W*.3, o.Y+o.H*.4, now, 1.8)
+		boom(r, o.X+o.W*.7, o.Y+o.H*.6, now, 2.2)
+		r.Announcement = upper(o.Team) + " HQ DESTROYED — FLAG EXPOSED"
+		r.AnnouncementUntil = now + 2600
 	case o.Kind == "wreck" && o.HP == 0:
 		boom(r, o.X, o.Y, now, .95)
 	}
@@ -710,9 +838,10 @@ func ramVehicle(r *Room, p *Player, h *hit, now float64) {
 
 func isHeavy(kind string) bool { return kind == "tank" || kind == "asv" || kind == "arty" }
 
-// crushOnContact lets vehicles flatten soft cover; it reports whether the obstacle is gone.
-func crushOnContact(r *Room, p *Player, h *hit, dt, now float64) bool {
-	speed, heavy := hypot(p.VX, p.VY), isHeavy(p.Type)
+// crushOnContact lets vehicles flatten soft cover; speed is the impact speed into it.
+// It reports whether the obstacle is gone.
+func crushOnContact(r *Room, p *Player, h *hit, speed, dt, now float64) bool {
+	heavy := isHeavy(p.Type)
 	switch {
 	case h.kind == "bush" && speed > 65:
 		damageObject(r, h.obj, 50, now)
@@ -728,6 +857,64 @@ func crushOnContact(r *Room, p *Player, h *hit, dt, now float64) bool {
 		damageObject(r, h.obj, speed*.3*dt*30, now)
 	}
 	return h.cleared()
+}
+
+// resolveContacts pushes a vehicle out of whatever it overlaps and removes only the
+// velocity heading into each surface, so it slides along walls and glances off round
+// cover instead of sticking. Small cover may be crushed instead.
+func resolveContacts(r *Room, p *Player, dt, now float64) {
+	slop := Types[p.Type].Radius * ContactSlop
+	for pass := 0; pass < 3; pass++ {
+		contacts := contactsAt(r, p, p.X, p.Y)
+		if len(contacts) == 0 {
+			return
+		}
+		for i := range contacts {
+			c := &contacts[i]
+			vn := p.VX*c.nx + p.VY*c.ny
+			if c.obj != nil && c.obj.HP == 0 {
+				continue
+			}
+			if c.obj != nil && pass == 0 && crushOnContact(r, p, &c.hit, -vn, dt, now) {
+				continue
+			}
+			allowed := slop
+			if c.kind == "edge" {
+				allowed = 0
+			}
+			// Overlap inside the slop eases out gently; two sides squeezing a hull
+			// cancel out, which is what lets it slip through a tight gap.
+			push := math.Max(0, c.depth-allowed) + math.Min(c.depth, allowed)*.2
+			push = math.Min(push, MaxPushOut)
+			p.X += c.nx * push
+			p.Y += c.ny * push
+			if pass > 0 {
+				continue
+			}
+			if vn >= 0 {
+				continue
+			}
+			ramVehicle(r, p, &c.hit, now)
+			tx, ty := -c.ny, c.nx
+			vt := p.VX*tx + p.VY*ty
+			p.VX -= (1 + ContactBounce) * vn * c.nx
+			p.VY -= (1 + ContactBounce) * vn * c.ny
+			if !c.round || math.Abs(vt) > -vn*ContactSlip {
+				continue
+			}
+			side := sign(vt)
+			if math.Abs(vt) < 1 {
+				// Dead centre: veer toward the side the driver is steering.
+				side = sign(p.Input.DX*tx + p.Input.DY*ty)
+				if side == 0 {
+					side = 1
+				}
+			}
+			kick := -vn*ContactSlip - math.Abs(vt)
+			p.VX += tx * side * kick
+			p.VY += ty * side * kick
+		}
+	}
 }
 
 func moveVehicle(r *Room, p *Player, t *VehicleType, dt, now float64) {
@@ -829,32 +1016,13 @@ func moveVehicle(r *Room, p *Player, t *VehicleType, dt, now float64) {
 		p.VX = approach(p.VX, 0, t.Brake*dt)
 		p.VY = approach(p.VY, 0, t.Brake*dt)
 	}
-	// Swept, sub-stepped circular collision: slides against bunkers, crushes small cover,
-	// and never tunnels through obstacles when a fast jeep crosses one in a single tick.
+	// Sub-stepped so a fast jeep never tunnels through cover in a single tick.
 	movement := hypot(p.VX, p.VY) * dt
 	substeps := int(math.Max(1, math.Ceil(movement/7)))
 	for j := 0; j < substeps; j++ {
-		moveX, moveY := p.VX*dt/float64(substeps), p.VY*dt/float64(substeps)
-		hitX := collisionAt(r, p, p.X+moveX, p.Y)
-		if hitX != nil && p.Type != "heli" && crushOnContact(r, p, hitX, dt, now) {
-			hitX = nil
-		}
-		if hitX == nil {
-			p.X += moveX
-		} else {
-			ramVehicle(r, p, hitX, now)
-			p.VX *= -.11
-		}
-		hitY := collisionAt(r, p, p.X, p.Y+moveY)
-		if hitY != nil && p.Type != "heli" && crushOnContact(r, p, hitY, dt, now) {
-			hitY = nil
-		}
-		if hitY == nil {
-			p.Y += moveY
-		} else {
-			ramVehicle(r, p, hitY, now)
-			p.VY *= -.11
-		}
+		p.X += p.VX * dt / float64(substeps)
+		p.Y += p.VY * dt / float64(substeps)
+		resolveContacts(r, p, dt, now)
 	}
 	speed := hypot(p.VX, p.VY)
 	if p.Type != "heli" && p.Surface != "water" && speed > 68 && now-p.LastTrail > 160 {
@@ -1749,7 +1917,8 @@ func stepFlags(r *Room, now float64) {
 		if own.Dropped && near(p.X, p.Y, own.X, own.Y, 43) {
 			resetFlag(r, p.Team)
 		}
-		if p.Type == "jeep" && enemy.CarriedBy == "" && near(p.X, p.Y, enemy.X, enemy.Y, 52) {
+		atHome := !enemy.Dropped && enemy.CarriedBy == ""
+		if p.Type == "jeep" && enemy.CarriedBy == "" && near(p.X, p.Y, enemy.X, enemy.Y, 52) && !(atHome && hqStanding(r, enemyOf(p.Team))) {
 			enemy.CarriedBy, enemy.Dropped = p.ID, false
 			r.Announcement = upper(p.Team) + " JEEP STOLE THE FLAG"
 			r.AnnouncementUntil = now + 2100

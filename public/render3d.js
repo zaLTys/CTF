@@ -2,6 +2,7 @@ import * as THREE from 'three';
 
 // World units map 1:1 onto three.js units: world (x, y) is scene (x, 0, y), and a
 // world heading `a` is a rotation of -a around the vertical axis.
+const HQ_ROOF = [46, 46, 32];
 const TEAM = {
   blue: { body: 0x3e7e92, trim: 0x9adbe9, dark: 0x22424f, flag: 0x68c8db },
   red: { body: 0x9c4b3c, trim: 0xf4ab93, dark: 0x5b2a22, flag: 0xf17f6c },
@@ -619,6 +620,7 @@ export class Renderer3D {
       return;
     }
     if (o.kind === 'wall' || o.kind === 'gate') return this.buildRampart(g, o, stage);
+    if (o.kind === 'hq' && stage < 3) return this.buildHQ(g, o, stage);
     const isBuilding = o.kind === 'building';
     if (stage >= 3) {
       g.add(box(w * .95, 5, d * .95, mat(0x4a4d42, { rough: 1 }), 0, 2.5, 0));
@@ -646,6 +648,36 @@ export class Renderer3D {
     if (stage >= 1) {
       const crack = box(4, wallH * .7, 1, mat(0x1f2c29), w * .12, wallH * .45, d / 2 + .2);
       crack.rotation.z = .4; g.add(crack);
+    }
+  }
+
+  // Command bunker that carries the team flag on its roof until it is levelled.
+  buildHQ(g, o, stage) {
+    const c = TEAM[o.team], w = o.w, d = o.h, h = HQ_ROOF[stage];
+    const concrete = mat([0x9a9784, 0x7f7c6b, 0x66645a][stage], { rough: .95 });
+    const facing = o.team === 'blue' ? 1 : -1;
+    g.add(box(w + 10, 5, d + 10, mat(0x4d5246, { rough: 1 }), 0, 2.5, 0));
+    g.add(box(w, h - 4, d, concrete, 0, (h - 4) / 2 + 4, 0));
+    g.add(box(w + 2, 5, d + 2, mat(c.body, { rough: .6 }), 0, h * .55, 0));
+    g.add(box(w + 3, 3, d + 3, mat(0x55564b, { rough: .9 }), 0, h - 1.5, 0));
+    for (const [px, pz, pw, pd] of [[0, -d / 2, w, 4], [0, d / 2, w, 4], [-w / 2, 0, 4, d], [w / 2, 0, 4, d]]) {
+      g.add(box(pw, 5, pd, concrete, px, h + 2.5, pz));
+    }
+    g.add(box(4, 20, 18, mat(0x1b2621), facing * (w / 2 + 1), 14, 0));
+    for (const z of [-d / 3, d / 3]) g.add(box(3, 6, 12, mat(0x1b2621), facing * (w / 2 + 1), h * .72, z));
+    if (stage === 0) {
+      const mast = new THREE.Group(); mast.position.set(-facing * w * .3, h, -d * .3);
+      mast.add(cyl(.9, .9, 34, mat(0x59605a, { metal: .4 }), 0, 17, 0), box(6, 2, 6, mat(c.flag, { emissive: c.flag }), 0, 34, 0));
+      g.add(mast);
+    }
+    if (stage >= 1) {
+      for (const [x, r] of [[w * .18, .4], [-w * .22, -.5]]) {
+        const crack = box(3, h * .6, 1, mat(0x1f2c29), x, h * .45, d / 2 + .3);
+        crack.rotation.z = r; g.add(crack);
+      }
+    }
+    if (stage === 2) for (let i = 0; i < 5; i++) {
+      g.add(box(8 + i * 2, 5, 7, mat(0x8e8c79, { rough: 1 }), ((i * 41) % 100 / 100 - .5) * w * 1.3, 3, d / 2 + 8 + (i % 2) * 6));
     }
   }
 
@@ -1025,10 +1057,10 @@ export class Renderer3D {
     });
     this.vehicles.sync(players.filter(p => p.alive), p => p.id, (holder, p) => {
       const data = holder.userData;
-      if (data.type !== p.type) {
+      if (data.type !== p.type || data.team !== p.team) {
         if (data.model) holder.remove(data.model.group);
         data.model = buildVehicle(p.type, p.team);
-        data.type = p.type;
+        data.type = p.type; data.team = p.team;
         holder.add(data.model.group);
       }
       const altitude = ALTITUDE[p.type] || 0;
@@ -1078,7 +1110,10 @@ export class Renderer3D {
       g.userData.group.rotation.z = -.18;
       g.userData.props.forEach((p, i) => { p.rotation.y = time / 20 * (i % 2 ? 1 : -1); });
     });
-    for (const team of ['blue', 'red']) this.updateFlag(this.flags[team], game.flags[team], players, time);
+    for (const team of ['blue', 'red']) {
+      const hq = (game.obstacles || []).find(o => o.kind === 'hq' && o.team === team);
+      this.updateFlag(this.flags[team], game.flags[team], players, time, hq);
+    }
 
     const since = Math.max(-100, serverNow - game.time) / 1000;
     this.bulletPool.sync(game.bullets || [], b => b.id, (g, b) => {
@@ -1162,10 +1197,11 @@ export class Renderer3D {
     this.renderer.render(this.scene, this.camera);
   }
 
-  updateFlag(g, flag, players, time) {
+  updateFlag(g, flag, players, time, hq) {
     const carrier = flag.carriedBy ? players.find(p => p.id === flag.carriedBy) : null;
+    const onRoof = !carrier && !flag.dropped && hq && hq.hp > 0;
     if (carrier) g.position.set(carrier.x - 8, 18, carrier.y);
-    else g.position.set(flag.x, 0, flag.y);
+    else g.position.set(flag.x, onRoof ? HQ_ROOF[hq.stage ?? 0] : 0, flag.y);
     const { cloth, base } = g.userData, pos = cloth.geometry.attributes.position;
     for (let i = 0; i < pos.count; i++) {
       const x = base[i * 3];
@@ -1336,7 +1372,6 @@ function paintGround(world) {
     g.fillStyle = team === 'blue' ? '#35616c' : '#724a42'; g.fillRect(-50, -57, 100, 114);
     g.fillStyle = '#253d37'; g.fillRect(-32, -39, 64, 78);
     g.fillStyle = ac; g.fillRect(-28, -35, 56, 5);
-    g.fillStyle = ac; g.font = '900 21px system-ui'; g.textAlign = 'center'; g.fillText(team === 'blue' ? 'B / HQ' : 'R / HQ', 0, -83);
     g.fillStyle = '#c9c49a'; for (let x = -145; x < 147; x += 30) { g.fillRect(x, -146, 12, 5); g.fillRect(x, 141, 12, 5); }
     g.restore();
   }

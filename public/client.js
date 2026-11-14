@@ -74,7 +74,7 @@ function connect() {
     try { data = JSON.parse(event.data); } catch { return; }
     if (data.type === 'error') { message(data.message.toUpperCase()); toast(data.message); return; }
     if (data.type === 'welcome') {
-      snapshots.length = 0;
+      snapshots.length = 0; game = previous = null;
       world = data.world; selfId = data.id; selfTeam = data.team; code = data.code; input.aim = selfTeam === 'blue' ? 0 : Math.PI;
       lobby.classList.add('hidden'); hud.classList.remove('hidden');
       $('roomLabel').textContent = `ROOM ${code} · ${world.mapName}`;
@@ -82,7 +82,19 @@ function connect() {
       renderer.setWorld(world, selfTeam);
       toast(`${world.mapName} · ${selfTeam.toUpperCase()} TEAM — Q / E ROTATE CAMERA`);
     }
+    if (data.type === 'left') {
+      world = game = previous = null; selfId = selfTeam = code = undefined;
+      snapshots.length = 0;
+      input.fire = false; input.secondary = false; keyboard.clear();
+      sound.engine({ alive: false });
+      hud.classList.add('hidden'); lobby.classList.remove('hidden');
+      history.replaceState(null, '', location.pathname);
+      $('roomCode').value = '';
+      message('LEFT THE ROOM — CREATE A NEW ONE OR JOIN A FRIEND.');
+      return;
+    }
     if (data.type === 'state') {
+      if (!world) return;
       previous = game;
       game = data;
       receivedAt = performance.now();
@@ -130,6 +142,7 @@ window.addEventListener('keydown', e => {
   keyboard.add(e.code);
   if (vehicleKeys[e.code] && !e.repeat) chooseVehicle(vehicleKeys[e.code]);
   if (e.code === 'KeyK' && !e.repeat && world) selfDestruct();
+  if (e.code === 'KeyT' && !e.repeat && world) send({ type: 'team' });
   if (e.code === 'KeyM' && !e.repeat) toggleSound();
   if (e.code === 'KeyC' && !e.repeat && world) {
     input.driveMode = input.driveMode === 'classic' ? 'vector' : 'classic';
@@ -154,6 +167,8 @@ function toggleSound() {
   $('soundToggle').textContent = sound.enabled ? 'SOUND ON' : 'SOUND OFF';
 }
 $('selfDestruct').onclick = selfDestruct;
+$('switchTeam').onclick = () => send({ type: 'team' });
+$('leaveRoom').onclick = () => { if (confirm('Leave this room?')) send({ type: 'leave' }); };
 $('soundToggle').onclick = toggleSound;
 $('soundToggle').textContent = sound.enabled ? 'SOUND ON' : 'SOUND OFF';
 
@@ -365,6 +380,13 @@ function drawDroneOverlay(p) {
 }
 
 function drawRadar() {
+  rctx.save();
+  if (Math.cos(renderer.yaw) < 0) { rctx.translate(radar.width, radar.height); rctx.rotate(Math.PI); }
+  drawRadarMap();
+  rctx.restore();
+}
+
+function drawRadarMap() {
   const x = radar.width / world.width, y = radar.height / world.height;
   if (world.coast?.length) {
     rctx.fillStyle = '#16343a'; rctx.fillRect(0, 0, radar.width, radar.height);
@@ -377,7 +399,7 @@ function drawRadar() {
   for (const b of game.bridges ?? []) { rctx.fillStyle = b.hp > 0 ? '#c4be8e' : '#6c4740'; rctx.fillRect(b.x * x, b.y * y, b.w * x, b.h * y); }
   for (const c of game.obstacles ?? []) {
     if (c.hp <= 0) continue;
-    rctx.fillStyle = c.kind === 'gate' ? colors[c.team] : c.kind === 'wall' ? '#c9c6b0' : '#7f9276';
+    rctx.fillStyle = c.kind === 'gate' || c.kind === 'hq' ? colors[c.team] : c.kind === 'wall' ? '#c9c6b0' : '#7f9276';
     rctx.fillRect(c.x * x, c.y * y, Math.max(1.5, c.w * x), Math.max(1.5, c.h * y));
   }
   for (const o of game.scenery ?? []) { if (o.hp <= 0) continue; rctx.fillStyle = o.kind === 'rock' ? '#9da797' : '#335b38'; rctx.fillRect(o.x * x - 1, o.y * y - 1, 3, 3); }

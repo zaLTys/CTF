@@ -127,6 +127,24 @@ func (h *hub) handle(c *client, raw []byte) {
 				sim.SetInput(p, m)
 			}
 		}
+	case "leave":
+		h.leave(c)
+		c.queue(map[string]any{"type": "left"})
+	case "team":
+		r := h.rooms[c.roomCode]
+		p := (*sim.Player)(nil)
+		if r != nil {
+			p = r.Player(c.playerID)
+		}
+		if p == nil {
+			return
+		}
+		if text := sim.SwitchTeam(r, p); text != "" {
+			c.queue(errorMsg(text))
+			return
+		}
+		c.queue(map[string]any{"type": "welcome", "id": p.ID, "team": p.Team, "code": c.roomCode, "world": sim.WorldFor(r)})
+		c.queue(sim.TakeSnapshot(r, nowMs(), p.Team))
 	case "selfdestruct":
 		if r := h.rooms[c.roomCode]; r != nil {
 			if p := r.Player(c.playerID); p != nil {

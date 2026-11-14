@@ -1,8 +1,8 @@
-# FLAG RUN v0.4 — Destructible Battlefields
+# FLAG RUN v0.5: Walls, Rockets and Mines
 
-An original, playable top-down multiplayer vehicle capture-the-flag game, inspired by classic 1990s vehicular combat games. Everything is original (no Return Fire art, code, music or other copyrighted game assets).
+An original top-down multiplayer vehicle capture-the-flag game, inspired by classic 1990s vehicular combat games. Everything is original; no Return Fire art, code, music or other copyrighted assets are used.
 
-**Engine:** authoritative Go server (simulation, physics and WebSocket rooms in `sim/` and `main.go`) and a three.js 3D browser client (`public/render3d.js`). Designed for browsers on desktop or phone. The previous Canvas 2D view is still available at `/classic.html`.
+**Engine:** an authoritative Go server (simulation, physics and WebSocket rooms in `sim/` and `main.go`) with a cel-shaded three.js client (`public/render3d.js`). It plays in desktop and phone browsers. The old Canvas 2D view is still available at `/classic.html`.
 
 ## Run
 
@@ -13,87 +13,86 @@ go test ./...
 go run .            # or: go build -o flagrun.exe . && ./flagrun.exe
 ```
 
-Set `PORT` to change the port (default 3000). `-public <dir>` changes the static file directory. The old Node server (`server.js`, `game.js`) is kept only for reference and is no longer needed.
+Set `PORT` to change the port (default 3000). `-public <dir>` changes the static file directory. A multi-stage `Dockerfile` is included. The old Node server (`server.js`, `game.js`) is kept only for reference.
 
-Open **http://localhost:3000**. Choose a map and create a room; another player can join using the room code or copied URL. Up to **4 players (2v2)** per room. For a phone on the same Wi-Fi, open `http://COMPUTER_LAN_IP:3000` and allow TCP/3000 through the machine firewall. Online hosting needs a Node-capable server with HTTPS and WebSocket upgrades.
+Open **http://localhost:3000**, choose a battlefield and create a room. Others join with the five-character room code or the copied link. A room holds up to **4 players (2v2)**. **LEAVE** in the top bar returns you to the lobby; an empty room is deleted. **SWITCH TEAM** (or `T`) moves you to the other side without leaving: you respawn at that HQ, and mines, wrecks and damage stay on the field. This makes it easy to test the other side's view alone, for example driving into your own mines, which are now enemy mines and invisible to you. For a phone on the same Wi-Fi, open `http://COMPUTER_LAN_IP:3000` and allow TCP/3000 through the firewall. Online hosting needs HTTPS with WebSocket upgrades.
 
-## What is new in v0.4
+## How to win
 
-### Island battlefields and amphibious jeeps
+Each flag flies from the roof of its team's **HQ building** in the middle of the base. First knock the enemy HQ down (380 HP; any enemy fire works, including tank shells, rockets, artillery, drones and grenades). Then steal the exposed flag with a **jeep** (the only vehicle that can carry it) and bring it back to your own HQ while your own flag is at home. Your own fire never damages your own HQ, walls or gates. Every capture resets the round: flags, HQ buildings, turrets, walls, buildings, bridges, wrecks, mines and projectiles.
 
-- Every map is an island with an irregular, seeded coastline (kept 180-degree symmetric and clear of both bases), surrounded by open sea instead of a square wall.
-- Rivers and the sea no longer block movement. The **jeep is amphibious**: its wheels fold up and it swims at a third of its land speed. Every other ground vehicle that drives into water **sinks** and leaves no wreck. Helicopters and FPV drones fly over water as before.
-- Mines can't be laid in water.
-- **Mines** are laid by the Rocket ASV, now the dedicated mine layer: 4 per sortie, refilled at base. It is also quicker than before (top speed 182, up from 144, with faster acceleration and turning). Mines arm after 0.65 s. Your team sees them as blinking beacons with a ripple; enemies never receive their positions. Any enemy ground vehicle that drives over one is destroyed outright, whatever its health, and the blast also damages anything nearby. Helicopters fly over them.
-- A jeep may swim up to 340 units past the island's outer waters. Out there a 5-second countdown starts, and it sinks unless it turns back. A flag lost at sea returns home immediately.
-- Carrying the flag slows the jeep (about 18% lower top speed).
+## Vehicles
 
-### Respawning, self-destruct and vehicle limits
+Each team may field **one of each vehicle**, except jeeps (unlimited). Taken vehicles are greyed out. Switch at your base, or pick your next vehicle while waiting to respawn.
 
-- **Self-destruct** (HUD button or `K` twice) blows up your vehicle; the respawn wait is 6 seconds instead of 2.4.
-- While waiting to respawn, press `1`–`6` or tap a vehicle to choose what you respawn as. You keep your last choice after that.
-- Each team may field **one of each vehicle**, except jeeps (unlimited). Taken vehicles are greyed out.
+| Vehicle | Speed / HP | Primary (left click) | Secondary (right click / `F`) | Notes |
+| --- | --- | --- | --- | --- |
+| **Recon Jeep** | 330 / 90 | Grenades, lobbed to the cursor (up to 360) | — | Flag carrier. Amphibious: swims at 1/3 speed. Carrying the flag cuts top speed by about 18% |
+| **Battle Tank** | 195 / 220 | Cannon along the turret, which turns toward the cursor | — | Heavy armour; can crush wrecks |
+| **Attack Heli** | 285 / 125 | Machine gun, 7 damage every 0.15 s | **Ground rockets**: 8 per sortie, dive onto the cursor (up to 380), 85 damage in a 64-unit blast | Flies over water, walls and mines |
+| **Rocket ASV** | 182 / 270 | Unguided rockets along the hull, with area damage | **Mines**: 4 per sortie | The mine layer |
+| **Field Artillery** | 122 / 160 | Area strikes 145 to 980 units away | — | Must deploy first (see controls). The view widens the longer it stays planted |
+| **FPV Operator** | 162 / 110 | Launches a remote kamikaze drone (640 link range) | — | Steer the drone, click again to detonate |
+
+Ammo, fuel, health and secondary stock refill inside your own HQ.
+
+## Battlefield
+
+### Islands, water and the amphibious jeep
+
+- Every map is an island with an irregular, seeded coastline (180-degree symmetric and clear of both bases), surrounded by sea.
+- Only the **jeep** can enter water: its wheels fold up and it swims at a third of its land speed. Any other ground vehicle that drives into a river or the sea **sinks** and leaves no wreck.
+- A jeep may swim up to 340 units beyond the island. Out there a 5-second countdown starts, and it sinks unless it turns back. A flag lost at sea returns home immediately.
 
 ### HQ walls, gates and turrets
 
-- Every HQ sits inside a crenellated stone wall with three gates: one facing the centre of the map, one north and one south.
-- Gates are solid to enemies but your own vehicles drive straight through, and the doors swing open as you approach. Helicopters fly over everything.
+- Each HQ sits inside a crenellated stone wall with three gates: one facing the centre and one on each flank.
+- **Gates** are solid to enemies, but your own vehicles drive straight through and the doors swing open as you approach.
 - Walls (240 HP) and gates (320 HP) can be blown open by enemy fire, with a "WALL/GATE BREACHED" announcement. Your own shots pass over your own walls.
-- Defence turrets now lead moving targets, reload in 0.7 s, fire faster shells (660 u/s) and hit for 26.
-- **Anti-air rocket sites** sit in the two back corners of each HQ. They ignore ground vehicles and only engage helicopters and FPV drones within 640 units. Every 2.6 s they launch a slow (340 u/s) homing missile with a proximity fuse. Its airburst does a flat 65 damage to helicopters, so exactly two hits down one, and knocks drones out of the sky. A team only has one missile chasing any given aircraft at a time. A helicopter flying flat out can just outrun a missile until it burns out.
+- **Gun turrets** guard the approaches. They lead moving targets, reload in 0.7 s and hit for 26.
+- **Anti-air rocket sites** sit in the back corners of each HQ.
+  - They ignore ground vehicles and engage only helicopters and FPV drones within 640 units.
+  - Every 2.6 s they launch a slow (340 u/s) homing missile with a proximity fuse.
+  - An airburst does a flat 65 damage to a helicopter (exactly two hits) and destroys drones outright.
+  - Only one missile per team chases a given aircraft at a time, and a helicopter flying flat out can outrun one until it burns out.
 
-### Helicopter weapons
+### Mines
 
-- **Machine gun** (left click): 7 damage every 0.15 s, down from 12 every 0.125 s.
-- **Ground rockets** (right click or `F`): 8 per sortie, one every 0.6 s, refilled at base. Each dives onto the point under the cursor (up to 380 units away) and bursts for 85 damage in a 64-unit radius. That is enough to level buildings and drop bridges in a few volleys.
+- Laid by the **Rocket ASV** behind its hull; they arm after 0.65 s and can't be laid in water.
+- Your team sees them as blinking beacons with a ripple. Enemies never receive their positions: snapshots are built per team, so the data never leaves the server.
+- Any enemy ground vehicle that drives over a mine is **destroyed outright**, whatever its health, and the blast damages anything nearby. Helicopters fly over them.
 
-### Sound and look
+### Three battlefields
 
-- All sound is synthesised in the browser with WebAudio, so there are no audio files: engines and rotor wash, gunfire, rockets, grenades, explosions, splashes, artillery whistles, flag and capture jingles. `M` toggles it.
-- Cel shading with black ink outlines, puffy multi-blob trees and smoother cylinders.
-
-### Three different playable battlefields
-
-Select the battlefield **before creating a room**. The server validates the map ID and sends the chosen authoritative geometry to all connected players; joining players cannot change the map.
+Choose the battlefield **before creating a room**; joining players cannot change it.
 
 | Map | Terrain and tactics |
 | --- | --- |
-| **Old Causeway** | Temperate forests, wide central highway, north and south river bridges, dense base defenses |
+| **Old Causeway** | Temperate forests, wide central highway, north and south river bridges, dense base defences |
 | **River Delta** | Wider water channels, wetland foliage and mud, long north/south crossings, scattered side pools |
-| **Dust & Iron** | Arid quarry, offset lakes, twin shortcut bridges, different road network and sparse trees |
+| **Dust & Iron** | Arid quarry, offset lakes, twin shortcut bridges, a different road network and sparse trees |
 
-All maps use 180-degree rotationally symmetric routes/cover for fair starts. A **permanent, dry center route** remains traversable on every map even if all optional bridges are destroyed, preventing a no-way-to-score situation.
+All maps use 180-degree symmetric routes and cover. A **permanent dry centre route** always remains, even if every bridge is destroyed.
 
-### Destructible bridges
+### Destruction
 
-- Each map has **two solid bridge decks** crossing water obstacles.
-- Ground vehicles can cross an intact bridge. Helicopters can fly over water regardless.
-- Tank cannon shells, rocket blasts, and artillery/FPV splash cause bridge damage.
-- The bridge has **four visual/physical conditions**: intact, cracked, severely breached, and collapsed.
-- A collapsed bridge disappears as a traversable surface. Ground units must take another route; a vehicle on the span when it collapses falls and is destroyed. Any flag it carries is dropped according to existing flag rules.
-- Broken bridge piers and debris remain until the next flag capture round; the bridge resets when a new round starts.
+- **Bridges**:
+  - Two per map. Tank shells, rockets, artillery, FPV drones and helicopter rockets damage them.
+  - They go from intact to cracked to breached to collapsed. A vehicle on the span when it collapses falls and is destroyed.
+- **Buildings and bunkers** collapse in stages. Fully destroyed ones stop blocking vehicles and shots.
+- **Trees, bushes and crates** can be destroyed. Rocks absorb fire but don't break.
+- **Wrecks**: destroyed vehicles leave smoking wrecks that block ground vehicles and absorb fire.
+  - Destroying a wreck, or ramming it fast in a heavy vehicle, clears it.
+  - At most 32 per room. None form near an HQ or in water.
 
-### Buildings collapse in stages
+### Collisions
 
-- Each map includes new warehouses in addition to legacy bunkers, crates, and trees.
-- Warehouses transition through **intact → roof damage/cracks → exposed interior → impassable rubble-free footprint** (the final visual rubble is passable).
-- Bunkers also display progressive damage states. Every actual state change comes from server-side object HP, not a local-only effect.
-- Shells, rockets, artillery, and drone explosions can breach structures. Fully destroyed objects stop blocking ground vehicles and bullets.
+Vehicles slide along walls instead of sticking to them. A hull pushed straight into a round obstacle (a tree, rock, wreck or building corner) glances off to the side you steer toward. A little overlap is tolerated, so a hull can squeeze through a gap slightly narrower than itself. Light vehicles skip around cover quickly, while heavy ones grind past. Cover is crushed by the impact speed into it, so scraping past a wreck doesn't flatten it.
 
-### Persistent vehicle wrecks
+### Respawning and self-destruct
 
-- Destroyed jeeps, tanks, helicopters, artillery, rocket vehicles, and FPV operator vehicles leave blackened, smoking wrecks on the battlefield.
-- Wrecks are solid circular obstacles that ground vehicles must drive around. Shots and explosions damage them; heavy vehicles can crush them when moving fast enough.
-- Reducing wreck HP to zero clears the collision, but scrap remains visible until the round ends.
-- Wrecks last **through player respawns**, with a server-side cap of 32 per room. Wrecks are not created in spawn pads to prevent spawn blocking. Wrecks are cleared when a flag is captured (the start of the next round).
-
-### Existing v0.3 features retained
-
-- Six vehicles: Jeep (only flag carrier), Tank (rotating turret), Helicopter (strafe and water travel), Rocket ASV, Field Artillery, FPV Drone Operator.
-- Vehicle acceleration, forward/reverse handling, coasting, turning-radius constraints, inertia, collision sliding and ramming.
-- Ground roads with improved traction and top speed, slow mud, impassable water, 200-ish destructible trees/bushes/rocks on default map, turrets, buildings and supplies.
-- Health, fuel, ammunition, flag stealing, team scoring and repair/rearm at bases.
-- Browser multiplayer 30 Hz server simulation and 20 Hz snapshots, plus a minimap and phone controls.
+- The respawn wait is 2.4 s. **Self-destruct** (HUD button or `K` twice) blows up your vehicle with a 6 s wait.
+- While waiting, press `1`–`6` or tap a vehicle to choose your next one. You keep that choice afterwards.
 
 ## Controls
 
@@ -101,46 +100,61 @@ All maps use 180-degree rotationally symmetric routes/cover for fair starts. A *
 | --- | --- | --- |
 | Drive | WASD or arrow keys, relative to the vehicle nose (W forward, S reverse, A/D steer; helicopters strafe). `C` switches to screen-axis steering | Left virtual joystick |
 | Aim | Mouse | Right virtual joystick |
-| Fire | Click or Space | Automatic on aim / FIRE button |
-| Switch vehicle at your base | Keys `1`–`6` | Unit selector along bottom |
+| Fire | Left click or Space | Automatic while aiming, or the FIRE button |
+| Secondary (heli rocket / ASV mine) | Right click or `F` | ROCKET / MINE button left of FIRE (shows the count) |
+| Switch vehicle | `1`–`6` at your base or while respawning | Unit selector along the bottom |
 | Rotate camera | `Q` / `E` | — |
-| Lay mine (Rocket ASV) / ground rocket (helicopter) | `F` or right click | MINE / ROCKET button left of FIRE (shows how many are left) |
-| Artillery | First click deploys (1.8 s, can't move). Then each click fires a timed area strike, and the view widens the longer you stay planted. Driving packs up (1.4 s) before moving; click again to re-deploy | Tap DEPLOY, aim with right stick, tap STRIKE |
-| FPV | Click to launch, steer with WASD, click to detonate | LAUNCH, steer left stick, DETONATE |
+| Self-destruct | `K` twice, or the HUD button | HUD button |
+| Sound on/off | `M` | SOUND button |
+| Switch team | `T` or SWITCH TEAM (only if the other team has a free slot) | SWITCH TEAM button |
+| Leave room | LEAVE button | LEAVE button |
+| Artillery | The first click deploys (1.8 s, can't move); then each click fires a timed area strike. Driving packs up (1.4 s); click again to re-deploy | Tap DEPLOY, aim with the right stick, tap STRIKE |
+| FPV | Click to launch, steer with WASD, click to detonate | LAUNCH, steer with the left stick, DETONATE |
+
+## Look, sound and camera
+
+- **Look**: cel shading with black ink outlines, detailed low-poly vehicles, puffy multi-blob trees, and animated gates, rotors, artillery legs and jeep wheels.
+- **Sound**: synthesised in the browser with WebAudio, with no audio files. It covers engines and rotor wash, gunfire, rockets, missiles, grenades, explosions, airbursts, splashes, artillery whistles, and flag and capture jingles.
+- **Camera**: a follow camera that zooms out with speed and leads in the direction of travel.
+- **Smoothing**: the client keeps a short buffer of snapshots and draws the world about 80 ms in the past, so motion stays smooth despite network jitter.
 
 ## Architecture
 
 ```text
-public/index.html + client.js   input, HUD, radar, touch sticks
-public/render3d.js              three.js scene: lit low-poly vehicles, shadows,
-                                water, explosions, speed-scaled follow camera
-                                 ⇅ WebSocket JSON (30 Hz sim, 20 Hz snapshots)
-main.go                     HTTP static files + WebSocket rooms (coder/websocket)
+public/index.html + client.js   input, HUD, radar, touch controls, snapshot buffer
+public/render3d.js              three.js scene: toon-shaded vehicles, walls, water,
+                                effects, follow camera
+public/sound.js                 procedural WebAudio sound
+                                 ⇅ WebSocket JSON (30 Hz simulation, 20 Hz snapshots)
+main.go                         HTTP static files + WebSocket rooms (coder/websocket)
                                  ⇣
-sim/                        Server-owned map, bridges, obstacles, wrecks,
-                            vehicles, collisions, projectiles, mines, objectives
+sim/                            server-owned maps, coastline, walls, bridges, obstacles,
+                                wrecks, vehicles, collisions, projectiles, turrets,
+                                missiles, mines and objectives
 ```
 
-Snapshots are built per team, so enemy mines never leave the server.
+Message types from the client: `create`, `join`, `leave`, `team`, `input`, `vehicle`, `selfdestruct`. From the server: `welcome` (with the `world` geometry), `state` (per-team snapshots), `left`, `error`.
 
-Data contracts:
-- `createRoom(code, mapId)` chooses the map (fallback `causeway`).
-- On welcome, `world` includes `mapId`, `mapName`, `biome`, and water/roads/mud/bridge geometry.
-- `snapshot(room)` exposes server-owned `bridges`, `wrecks`, `obstacles` (with `hp`, `maxHp`, and `stage`), and existing entities.
-- `step(room, now, dt)` controls destruction and collision, authoritative for all room members.
-
-## Developer testing and screenshots
+## Developer testing
 
 ```bash
-go test ./...
-node tools/ws-smoke.mjs 3000     # end-to-end protocol check against a running server
-python tools/make_previews.py    # optional: needs Python playwright and Chromium
+go test ./...                    # 52 simulation tests
+node tools/ws-smoke.mjs 3000     # end-to-end protocol check against a running server (needs the `ws` npm package)
+python tools/make_previews.py    # optional; needs Python Playwright and Chromium
 ```
 
-**25 simulation tests pass** including map selection, intact and destroyed bridge crossings, staged artillery damage, staged building destruction, vehicle wrecks blocking traffic and taking fire, vehicle falls on bridge collapse, and reset on scoring. Desktop and mobile preview captures render with no JavaScript page errors.
+The tests cover:
+- maps, coastline and water rules, bridges and destruction stages;
+- walls and gates, gun turrets and AA missiles;
+- helicopter rockets, mines, artillery deployment, drowning and offshore limits;
+- vehicle limits, respawn choice, self-destruct, flag rules and round reset.
 
-The `previews/` PNGs are **real client Canvas rendering with representative simulated game states**, not live multiplayer captures. Browser preview generation stubs the socket in order to capture repeatable game states. **Live two-device WebSocket integration was not verified in this environment** because npm dependency installation could not complete. Run `npm install` in your normal development environment, then test with two separate browsers/phones.
+The PNGs in `previews/` are older Canvas 2D captures and predate the 3D client.
 
 ## Current limitations
 
-This is a gameplay prototype, not a production game. Rooms are ephemeral and kept in memory. No lag compensation, server-to-client state deltas, anti-cheat beyond input clamping, advanced matchmaker, player accounts, persistent inventory, structural physics rigid-body solver, or audio yet. Bridge collapse is a server-authoritative stage switch and sprite change, not a continuous mesh animation. Future releases could add repair vehicles, more destructible infrastructure, map editing, and deployment.
+This is a gameplay prototype, not a production game.
+- Rooms live in memory only, with no accounts or matchmaking.
+- There is no client-side prediction or lag compensation; your own vehicle is shown slightly delayed.
+- There is no anti-cheat beyond input clamping.
+- Bridge and building collapse is a staged switch, not a physics simulation.

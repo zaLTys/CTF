@@ -91,6 +91,10 @@ func TestOnlyJeepStealsAndScores(t *testing.T) {
 	check(t, r.Flags["red"].CarriedBy == "", "tank cannot steal the flag")
 	p.X, p.Y = Bases["blue"].X, Bases["blue"].Y
 	SetInput(p, msg{"type": "vehicle", "vehicle": "jeep"})
+	p.X, p.Y = Bases["red"].X, Bases["red"].Y+40
+	Step(r, now+50, Tick)
+	check(t, r.Flags["red"].CarriedBy == "", "flag stays on a standing HQ")
+	destroyHQ(r, "red")
 	p.X, p.Y = Bases["red"].X, Bases["red"].Y
 	Step(r, now+100, Tick)
 	check(t, r.Flags["red"].CarriedBy == "a", "jeep steals the flag")
@@ -321,11 +325,17 @@ func TestTreesBlockJeepButTankCrushes(t *testing.T) {
 		r.Scenery = []*Object{tree}
 		p.Type, p.X, p.Y, p.BodyAngle = kind, 650, 720, 0
 		SetInput(p, input(msg{"dx": 1.0}))
-		runTicks(r, 120, 200_000)
 		if kind == "jeep" {
+			closest := math.Inf(1)
+			for i := 0; i < 120; i++ {
+				Step(r, 200_000+float64(i)*1000/30, Tick)
+				closest = math.Min(closest, math.Hypot(p.X-tree.X, p.Y-tree.Y))
+			}
 			check(t, tree.HP == 95, "jeep cannot damage tree")
-			check(t, p.X < 820-20-Types["jeep"].Radius+2, "tree blocks jeep x=%v", p.X)
+			check(t, closest > 20+Types["jeep"].Radius*(1-ContactSlop)-1, "jeep never drives through the trunk: %v", closest)
+			check(t, p.X > 900 && math.Abs(p.Y-720) > 20, "jeep glances around a dead-centre trunk x=%v y=%v", p.X, p.Y)
 		} else {
+			runTicks(r, 120, 200_000)
 			check(t, tree.HP == 0, "tank destroys tree")
 			check(t, p.X > 840, "tank passes the trunk x=%v", p.X)
 		}
@@ -383,6 +393,68 @@ func TestVehiclesCollide(t *testing.T) {
 	rad := Types["tank"].Radius
 	check(t, a.X+rad <= b.X+rad*1.1, "tanks stay separated")
 	check(t, b.HP < hp, "ramming damages the enemy")
+}
+
+func TestTankSqueezesThroughTightGapOnly(t *testing.T) {
+	rad := Types["tank"].Radius
+	for _, tc := range []struct {
+		gap  float64
+		pass bool
+	}{{2*rad - 6, true}, {rad, false}} {
+		r := CreateRoom("SQUEEZE", "")
+		p := AddPlayer(r, "pilot")
+		clearTerrain(r)
+		r.Obstacles = []*Object{
+			{ID: 1, Kind: "bunker", X: 800, Y: 620, W: 60, H: 100 - tc.gap/2, HP: 195, MaxHP: 195},
+			{ID: 2, Kind: "bunker", X: 800, Y: 720 + tc.gap/2, W: 60, H: 100 - tc.gap/2, HP: 195, MaxHP: 195},
+		}
+		p.Type, p.X, p.Y, p.BodyAngle = "tank", 650, 720, 0
+		SetInput(p, input(msg{"dx": 1.0}))
+		runTicks(r, 150, 200_000)
+		check(t, (p.X > 900) == tc.pass, "gap %v: pass=%v, tank at x=%v", tc.gap, tc.pass, p.X)
+	}
+}
+
+func TestVehicleSlidesAlongWall(t *testing.T) {
+	r := CreateRoom("SLIDE", "")
+	p := AddPlayer(r, "pilot")
+	clearTerrain(r)
+	r.Obstacles = []*Object{{ID: 1, Kind: "bunker", X: 400, Y: 700, W: 900, H: 40, HP: 195, MaxHP: 195}}
+	p.Type, p.X, p.Y, p.BodyAngle = "asv", 500, 640, math.Pi/4
+	SetInput(p, input(msg{"dx": 1.0, "dy": 1.0}))
+	runTicks(r, 90, 200_000)
+	check(t, p.Y < 700-Types["asv"].Radius*(1-ContactSlop), "wall holds the hull at y=%v", p.Y)
+	check(t, p.X > 650, "hull scrapes along the wall instead of sticking, x=%v", p.X)
+}
+
+func TestBuriedVehicleWorksFree(t *testing.T) {
+	r := CreateRoom("BURIED", "")
+	p := AddPlayer(r, "pilot")
+	clearTerrain(r)
+	building := &Object{ID: 1, Kind: "building", X: 700, Y: 700, W: 80, H: 60, HP: 300, MaxHP: 300}
+	r.Obstacles = []*Object{building}
+	p.Type, p.X, p.Y, p.BodyAngle = "tank", 715, 730, math.Pi
+	SetInput(p, input(msg{"dx": -1.0}))
+	runTicks(r, 60, 200_000)
+	check(t, !circleRect(p.X, p.Y, Types["tank"].Radius*(1-ContactSlop)-1, building.rect()), "tank eases out of a restored building at %v,%v", p.X, p.Y)
+	check(t, p.X < 640, "and drives away, x=%v", p.X)
+}
+
+func TestSwitchTeamKeepsTheField(t *testing.T) {
+	r := CreateRoom("SWAP", "")
+	p := AddPlayer(r, "solo")
+	check(t, p.Team == "blue", "first player is blue")
+	r.Mines = append(r.Mines, Mine{ID: "m1", Team: "blue", X: 1000, Y: 700, ArmedAt: 0})
+	r.Wrecks = append(r.Wrecks, &Object{ID: 900, Kind: "wreck", X: 1200, Y: 700, Radius: 20, HP: 90, MaxHP: 90})
+	r.Flags["red"].CarriedBy = p.ID
+	check(t, SwitchTeam(r, p) == "", "switch allowed")
+	check(t, p.Team == "red" && p.Alive && p.X > Width/2, "respawned at the red HQ x=%v", p.X)
+	check(t, r.Flags["red"].CarriedBy == "" && len(r.Mines) == 1 && len(r.Wrecks) == 1, "flag returned, field kept")
+	snap := TakeSnapshot(r, 100_000, p.Team)
+	check(t, len(snap.Mines) == 0, "old team's mines are now hidden")
+	AddPlayer(r, "b1")
+	AddPlayer(r, "b2")
+	check(t, SwitchTeam(r, p) != "", "cannot join a full team")
 }
 
 func TestThreeMaps(t *testing.T) {
@@ -471,8 +543,13 @@ func TestWrecksPersistAndBlock(t *testing.T) {
 	check(t, a.Alive && len(r.Wrecks) == 1, "wreck persists after respawn")
 	b.X, b.Y, b.VX, b.VY, b.BodyAngle = 840, 720, 0, 0, 0
 	SetInput(b, input(msg{"dx": 1.0}))
-	runTicks(r, 90, 103_000)
-	check(t, b.X < wreck.X-Types["tank"].Radius-wreck.Radius+7, "wreck blocks tank at %v", b.X)
+	minGap := Types["tank"].Radius + wreck.Radius - 3
+	closest := math.Inf(1)
+	for i := 0; i < 90; i++ {
+		Step(r, 103_000+float64(i)*1000/30, Tick)
+		closest = math.Min(closest, math.Hypot(b.X-wreck.X, b.Y-wreck.Y))
+	}
+	check(t, wreck.HP > 0 && closest > minGap-Types["tank"].Radius*ContactSlop-1, "wreck blocks the tank: closest %v hp %v", closest, wreck.HP)
 	r.Bullets = append(r.Bullets, &Bullet{ID: "scrap", Team: "red", Kind: "tank", X: wreck.X - 16, Y: wreck.Y, VX: 630, Damage: 130, Radius: 5, EndAt: 108_000})
 	Step(r, 107_000, Tick)
 	check(t, wreck.HP == 0 && len(r.Wrecks) == 1, "wreck cleared to scrap")
@@ -489,6 +566,7 @@ func TestNewRoundResets(t *testing.T) {
 		}
 	}
 	r.Wrecks = append(r.Wrecks, &Object{Kind: "wreck", X: 1000, Y: 700, HP: 110, Radius: 20})
+	destroyHQ(r, "red")
 	p.X, p.Y = Bases["blue"].X, Bases["blue"].Y
 	SetInput(p, msg{"type": "vehicle", "vehicle": "jeep"})
 	p.X, p.Y = Bases["red"].X, Bases["red"].Y
@@ -501,9 +579,50 @@ func TestNewRoundResets(t *testing.T) {
 		check(t, b.HP == b.MaxHP, "bridges restored")
 	}
 	for _, o := range r.Obstacles {
-		if o.Kind == "building" {
-			check(t, o.HP == o.MaxHP, "buildings restored")
+		if o.Kind == "building" || o.Kind == "hq" {
+			check(t, o.HP == o.MaxHP, "%s restored", o.Kind)
 		}
+	}
+}
+
+func destroyHQ(r *Room, team string) {
+	for _, o := range r.Obstacles {
+		if o.Kind == "hq" && o.Team == team {
+			o.HP, o.Stage = 0, 3
+		}
+	}
+}
+
+func TestHQShieldsFlagUntilDestroyed(t *testing.T) {
+	r := CreateRoom("HQ", "")
+	p := AddPlayer(r, "raider")
+	var hq *Object
+	for _, o := range r.Obstacles {
+		if o.Kind == "hq" && o.Team == "red" {
+			hq = o
+		}
+	}
+	check(t, hq != nil && hq.HP == HQHP, "red HQ stands at the start")
+	base := Bases["red"]
+	check(t, hq.X < base.X && hq.X+hq.W > base.X && hq.Y < base.Y && hq.Y+hq.H > base.Y, "flag sits on the HQ")
+	splash(r, "red", base.X, base.Y, 90, 500, 100_000)
+	check(t, hq.HP == HQHP, "own fire cannot hurt the HQ")
+	for i := 0; i < 10 && hq.HP > 0; i++ {
+		splash(r, "blue", base.X, base.Y, 90, 60, 100_000)
+	}
+	check(t, hq.HP == 0 && strings.Contains(r.Announcement, "FLAG EXPOSED"), "enemy fire levels the HQ: %v", r.Announcement)
+	r.Turrets = nil
+	SetInput(p, msg{"type": "vehicle", "vehicle": "jeep"})
+	p.Type, p.X, p.Y = "jeep", base.X-60, base.Y
+	SetInput(p, input(msg{"dx": 1.0}))
+	runTicks(r, 30, 101_000)
+	check(t, r.Flags["red"].CarriedBy == p.ID, "jeep drives over the rubble and takes the flag")
+	for _, tr := range newTurrets() {
+		want := 0.0
+		if tr.Team == "red" {
+			want = math.Pi
+		}
+		check(t, tr.Angle == want, "%s turret faces the enemy", tr.Team)
 	}
 }
 
