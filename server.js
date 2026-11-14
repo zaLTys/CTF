@@ -60,7 +60,7 @@ wss.on('connection', ws => {
       if (!player) { send(ws, { type: 'error', message: 'This room already has four players.' }); return; }
       ws.roomCode = code; ws.playerId = player.id;
       send(ws, { type: 'welcome', id: player.id, team: player.team, code, world: { width: WIDTH, height: HEIGHT, bases: BASES, mapId:room.mapId, mapName:room.map.name, biome:room.map.biome, mapChoices:MAP_CHOICES, water: room.map.water, mud:room.map.mud, roads:room.map.roads, cover: room.map.cover, bridges:room.map.bridges, types: TYPES } });
-      send(ws, snapshot(room));
+      send(ws, snapshot(room, Date.now(), player.team));
     } else if (ws.roomCode && (msg.type === 'input' || msg.type === 'vehicle')) {
       const p = rooms.get(ws.roomCode)?.players.get(ws.playerId);
       if (p) setInput(p, msg);
@@ -76,10 +76,12 @@ setInterval(() => {
   }
 }, 1000 / 30);
 setInterval(() => {
+  const now = Date.now();
   for (const room of rooms.values()) {
-    const data = JSON.stringify(snapshot(room));
     for (const ws of wss.clients) {
-      if (ws.roomCode === room.code && ws.readyState === WebSocket.OPEN && ws.bufferedAmount < 512_000) ws.send(data);
+      if (ws.roomCode !== room.code || ws.readyState !== WebSocket.OPEN || ws.bufferedAmount >= 512_000) continue;
+      const viewer = room.players.get(ws.playerId);
+      ws.send(JSON.stringify(snapshot(room, now, viewer?.team)));
     }
   }
 }, 1000 / 20);

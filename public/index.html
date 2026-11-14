@@ -7,10 +7,12 @@
   <meta name="description" content="Flag Run — multiplayer tactical vehicle capture-the-flag for your phone and browser.">
   <title>FLAG RUN — Tactical CTF</title>
   <link rel="stylesheet" href="/style.css">
-  <script src="/client.js" defer></script>
+  <script type="importmap">{ "imports": { "three": "/vendor/three/three.module.js" } }</script>
+  <script type="module" src="/client.js"></script>
 </head>
 <body>
   <canvas id="battle" aria-label="Multiplayer battlefield"></canvas>
+  <canvas id="overlay" aria-hidden="true"></canvas>
   <div id="hud" class="hidden">
     <div class="top-row">
       <div class="identity"><span class="brand-mark">FR<span class="dot">.</span></span><span class="brand-caption">FLAG RUN <small>DESTRUCTION BUILD 0.4</small></span></div>
@@ -22,13 +24,13 @@
     <div class="bottom-row">
       <div class="stat-card"><div class="eyebrow" id="vehicleName">BATTLE TANK</div><div class="stat-line"><span>HULL</span><div class="meter"><span id="hpBar" class="hp"></span></div><strong id="hpValue">100%</strong></div><div class="stat-line"><span>FUEL</span><div class="meter"><span id="fuelBar" class="fuel"></span></div><strong id="fuelValue">100%</strong></div><div class="stat-line"><span>AMMO</span><div class="meter"><span id="ammoBar" class="ammo"></span></div><strong id="ammoValue">100%</strong></div></div>
       <div class="vehicles" id="vehicleButtons">
-        <button data-vehicle="jeep" title="Press 1"><b>01</b><span>JEEP</span><small>FLAG RUNNER</small></button>
+        <button data-vehicle="jeep" title="Press 1"><b>01</b><span>JEEP</span><small>GRENADES</small></button>
         <button data-vehicle="tank" class="selected" title="Press 2"><b>02</b><span>TANK</span><small>ARMORED</small></button>
         <button data-vehicle="heli" title="Press 3"><b>03</b><span>HELI</span><small>AIR SUPPORT</small></button>
         <button data-vehicle="asv" title="Press 4"><b>04</b><span>ASV</span><small>ROCKETS</small></button>
         <button data-vehicle="arty" title="Press 5"><b>05</b><span>ARTY</span><small>INDIRECT FIRE</small></button>
         <button data-vehicle="fpv" title="Press 6"><b>06</b><span>FPV</span><small>DRONE CONTROL</small></button>
-        <div class="switch-note">SWITCH AT BASE · 1–6 UNITS · C TOGGLE SCREEN DRIVE</div>
+        <div class="switch-note">SWITCH AT BASE · 1–6 · F MINE · Q/E CAMERA · C SCREEN DRIVE</div>
       </div>
       <div class="tips"><div class="eyebrow">TACTICAL OBJECTIVE</div><div>Break their defenses. Capture the flag using your <b>jeep</b>.</div><small id="unitStatus">RETURN TO BASE FOR REPAIR + RESUPPLY</small><small id="physicsStatus">GRASS · SPEED 0 · HULL DRIVE</small></div>
     </div>

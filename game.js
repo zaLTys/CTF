@@ -8,12 +8,12 @@ export const BASES = {
   red: { x: 2165, y: 720 },
 };
 export const TYPES = {
-  jeep: { label: 'Recon Jeep', speed: 330, accel: 505, brake: 570, coast: 190, turnRate: 3.65, grip: 5.9, reverse: .43, hp: 90, ammo: 140, fuel: 100, fireMs: 145, damage: 10, bulletSpeed: 760, radius: 17 },
+  jeep: { label: 'Recon Jeep', speed: 330, accel: 505, brake: 570, coast: 190, turnRate: 3.65, grip: 5.9, reverse: .43, hp: 90, ammo: 12, fuel: 100, fireMs: 820, damage: 58, bulletSpeed: 760, radius: 17, range: 360, blastRadius: 74, mines: 6 },
   tank: { label: 'Battle Tank', speed: 195, accel: 290, brake: 410, coast: 160, turnRate: 2.55, grip: 8.4, reverse: .53, hp: 220, ammo: 40, fuel: 100, fireMs: 500, damage: 35, bulletSpeed: 630, radius: 24 },
   heli: { label: 'Attack Heli', speed: 285, accel: 385, brake: 175, coast: 100, turnRate: 2.8, grip: 1.2, reverse: 1, hp: 125, ammo: 150, fuel: 100, fireMs: 125, damage: 12, bulletSpeed: 780, radius: 22 },
   asv:  { label: 'Rocket ASV', speed: 144, accel: 185, brake: 300, coast: 130, turnRate: 1.75, grip: 7.1, reverse: .36, hp: 270, ammo: 25, fuel: 100, fireMs: 800, damage: 65, bulletSpeed: 510, radius: 25 },
   arty: { label: 'Field Artillery', speed: 122, accel: 160, brake: 240, coast: 120, turnRate: 1.55, grip: 7.4, reverse: .35, hp: 160, ammo: 12, fuel: 100, fireMs: 2600, damage: 145, radius: 27, range: 980, blastRadius: 115 },
-  fpv:  { label: 'FPV Operator', speed: 162, accel: 300, brake: 360, coast: 165, turnRate: 2.6, grip: 6.7, reverse: .5, hp: 110, ammo: 5, fuel: 100, fireMs: 900, damage: 125, radius: 22, blastRadius: 95 },
+  fpv:  { label: 'FPV Operator', speed: 162, accel: 300, brake: 360, coast: 165, turnRate: 2.6, grip: 6.7, reverse: .5, hp: 110, ammo: 5, fuel: 100, fireMs: 900, damage: 125, radius: 22, blastRadius: 95, range: 640 },
 };
 
 // Mostly symmetrical cover with a central causeway, keeping both teams fair.
@@ -185,7 +185,7 @@ function circleRect(x, y, r, rect) {
 export function createRoom(code, mapId='causeway') {
   const map=typeof mapId==='string' && Object.hasOwn(MAPS,mapId) ? MAPS[mapId] : MAPS.causeway;
   return {
-    code, mapId:map.id, map, players: new Map(), bullets: [], explosions: [], strikes: [], drones: [], craters: [], trails: [], wrecks: [],
+    code, mapId:map.id, map, players: new Map(), bullets: [], explosions: [], strikes: [], drones: [], mines: [], craters: [], trails: [], wrecks: [],
     bridges: newBridges(map), scenery: SCENERY[map.id].map(c => ({...c})), obstacles: newObstacles(map), scores: { blue: 0, red: 0 },
     flags: {
       blue: { ...BASES.blue, carriedBy: null, dropped: false, returnAt: 0 },
@@ -207,7 +207,8 @@ function spawn(p) {
   p.fuel = TYPES.tank.fuel;
   p.nextFire = 0;
   p.fireLatch = false;
-  p.input = { dx: 0, dy: 0, aim: p.angle, fire: false, targetX: p.x, targetY: p.y, driveMode:'vector' };
+  p.mines = 0; p.nextMine = 0; p.mineLatch = false;
+  p.input = { dx: 0, dy: 0, aim: p.angle, fire: false, mine: false, targetX: p.x, targetY: p.y, driveMode:'vector' };
   p.respawnAt = 0;
   p.alive = true;
 }
@@ -242,7 +243,7 @@ export function setInput(p, m) {
     const magnitude = Math.hypot(dx, dy);
     if (magnitude > 1) { dx /= magnitude; dy /= magnitude; }
     const tx = Number(m.targetX), ty = Number(m.targetY);
-    p.input = { dx, dy, aim: Number.isFinite(aim) ? aim : p.angle, driveMode: m.driveMode === 'classic' ? 'classic' : 'vector', fire: m.fire === true,
+    p.input = { dx, dy, aim: Number.isFinite(aim) ? aim : p.angle, driveMode: m.driveMode === 'classic' ? 'classic' : 'vector', fire: m.fire === true, mine: m.mine === true,
       targetX: Number.isFinite(tx) ? clamp(tx, 0, WIDTH) : p.x + Math.cos(p.angle) * 460,
       targetY: Number.isFinite(ty) ? clamp(ty, 0, HEIGHT) : p.y + Math.sin(p.angle) * 460 };
   }
@@ -250,6 +251,7 @@ export function setInput(p, m) {
     const type = m.vehicle;
     if (TYPES[type] && p.alive && close(p, BASES[p.team], 155)) {
       p.type = type; p.hp = TYPES[type].hp; p.ammo = TYPES[type].ammo; p.fuel = TYPES[type].fuel;
+      p.mines = TYPES[type].mines || 0; p.nextMine = 0; p.mineLatch = false;
       p.nextFire = 0; p.fireLatch = false; p.vx = 0; p.vy = 0;
       // Switching roles clears any pilot-controlled drone.
     }
@@ -411,7 +413,8 @@ function moveVehicle(room,p,t,dt,now) {
 }
 function fireBullet(room, shooter, now, automated = false) {
   const t = TYPES[shooter.type] || { bulletSpeed: 430, damage: 14 };
-  const angle = shooter.angle;
+  // Rockets leave along the hull. Every other gun uses its own aim angle.
+  const angle = shooter.type === 'asv' && Number.isFinite(shooter.bodyAngle) ? shooter.bodyAngle : shooter.angle;
   const muzzle = shooter.type === 'heli' ? 33 : 29;
   room.bullets.push({
     id: randomUUID(), team: shooter.team,
@@ -421,6 +424,33 @@ function fireBullet(room, shooter, now, automated = false) {
     endAt: now + (shooter.type === 'asv' ? 2250 : 1550), ownerId: shooter.id || null,
     kind: automated ? 'turret' : shooter.type,
   });
+}
+function throwGrenade(room, p, now) {
+  const t = TYPES.jeep;
+  let dx = p.input.targetX - p.x, dy = p.input.targetY - p.y;
+  let dist = Math.hypot(dx, dy);
+  if (dist < 56) {
+    dx = Math.cos(p.angle) * 56; dy = Math.sin(p.angle) * 56; dist = 56;
+  }
+  if (dist > t.range) { dx *= t.range / dist; dy *= t.range / dist; dist = t.range; }
+  const tx = clamp(p.x + dx, 16, WIDTH - 16), ty = clamp(p.y + dy, 16, HEIGHT - 16);
+  const flight = 300 + dist * 1.15;
+  room.bullets.push({
+    id: randomUUID(), team: p.team, kind: 'grenade', ownerId: p.id,
+    x: p.x, y: p.y, sx: p.x, sy: p.y, tx, ty,
+    vx: (tx - p.x) / (flight / 1000), vy: (ty - p.y) / (flight / 1000),
+    damage: t.damage, radius: 6, bornAt: now, impactAt: now + flight, endAt: now + flight,
+  });
+}
+function layMine(room, p, now) {
+  if (p.type !== 'jeep' || (p.mines || 0) <= 0 || now < (p.nextMine || 0)) return;
+  const x = clamp(p.x - Math.cos(p.bodyAngle) * 24, 18, WIDTH - 18);
+  const y = clamp(p.y - Math.sin(p.bodyAngle) * 24, 18, HEIGHT - 18);
+  room.mines.push({ id: randomUUID(), team: p.team, x, y, armedAt: now + 650 });
+  const friendly = room.mines.filter(m => m.team === p.team);
+  if (friendly.length > 10) room.mines.splice(room.mines.indexOf(friendly[0]), 1);
+  p.mines--;
+  p.nextMine = now + 700;
 }
 function boom(room, x, y, now, scale = 1) {
   room.explosions.push({ id: randomUUID(), x, y, bornAt: now, until: now + 650, scale });
@@ -453,7 +483,7 @@ function capture(room, team, now) {
   room.announcement = `${team.toUpperCase()} TEAM CAPTURED THE FLAG`;
   room.announcementUntil = now + 3300;
   room.pauseUntil = now + 2300;
-  room.bullets = []; room.strikes = []; room.drones = [];
+  room.bullets = []; room.strikes = []; room.drones = []; room.mines = [];
   resetFlag(room, 'blue'); resetFlag(room, 'red');
   for (const p of room.players.values()) spawn(p);
   room.turrets = turretPositions.map(([side, x, y], i) => ({ id: i + 1, team: side, x, y, hp: 135, angle: 0, nextFire: 0 }));
@@ -525,9 +555,14 @@ export function step(room, now = Date.now(), dt = TICK) {
     const t = TYPES[p.type];
     const activeDrone = p.type === 'fpv' ? room.drones.find(d => d.ownerId === p.id) : null;
     if (!activeDrone) moveVehicle(room,p,t,dt,now);
-    p.angle = Math.atan2(Math.sin(p.input.aim), Math.cos(p.input.aim));
+    const aim = Math.atan2(Math.sin(p.input.aim), Math.cos(p.input.aim));
+    if (p.type === 'tank') p.angle += clamp(angleDelta(p.angle, aim), -2.25 * dt, 2.25 * dt);
+    else p.angle = aim;
     const justFired = p.input.fire && !p.fireLatch;
     p.fireLatch = p.input.fire;
+    const justMine = p.input.mine && !p.mineLatch;
+    p.mineLatch = p.input.mine === true;
+    if (justMine) layMine(room, p, now);
     if (p.type === 'fpv') {
       if (activeDrone && justFired && now - activeDrone.bornAt > 250) {
         detonateDrone(room, activeDrone, now);
@@ -544,6 +579,12 @@ export function step(room, now = Date.now(), dt = TICK) {
             x: tx, y: ty, launchedAt: now, impactAt: now + 1200, radius: t.blastRadius });
         }
       }
+    } else if (p.type === 'jeep') {
+      if (justFired && p.ammo > 0 && now >= p.nextFire) {
+        p.ammo--;
+        p.nextFire = now + t.fireMs;
+        throwGrenade(room, p, now);
+      }
     } else if (p.input.fire && p.ammo > 0 && now >= p.nextFire) {
       p.ammo--;
       p.nextFire = now + t.fireMs;
@@ -553,6 +594,7 @@ export function step(room, now = Date.now(), dt = TICK) {
       p.fuel = Math.min(t.fuel, p.fuel + dt * 17);
       p.ammo = Math.min(t.ammo, p.ammo + dt * 12);
       p.hp = Math.min(t.hp, p.hp + dt * 24);
+      if (p.type === 'jeep') p.mines = Math.min(TYPES.jeep.mines, (p.mines || 0) + dt * 1.2);
     }
   }
   const remainingDrones = [];
@@ -575,8 +617,12 @@ export function step(room, now = Date.now(), dt = TICK) {
       vx /= mag; vy /= mag;
       d.angle = Math.atan2(vy, vx);
     }
-    d.x = clamp(d.x + vx * 450 * dt, 14, WIDTH - 14);
-    d.y = clamp(d.y + vy * 450 * dt, 14, HEIGHT - 14);
+    let nx = clamp(d.x + vx * 450 * dt, 14, WIDTH - 14);
+    let ny = clamp(d.y + vy * 450 * dt, 14, HEIGHT - 14);
+    const linkX = nx - pilot.x, linkY = ny - pilot.y;
+    const link = Math.hypot(linkX, linkY);
+    if (link > TYPES.fpv.range) { nx = pilot.x + linkX / link * TYPES.fpv.range; ny = pilot.y + linkY / link * TYPES.fpv.range; }
+    d.x = nx; d.y = ny;
     const target = [...room.players.values()].find(p => p.alive && p.team !== d.team && close(p, d, 34));
     const defense = room.turrets.find(t => t.hp > 0 && t.team !== d.team && close(t, d, 32));
     if (target || defense) { detonateDrone(room, d, now); continue; }
@@ -606,6 +652,15 @@ export function step(room, now = Date.now(), dt = TICK) {
   }
   const next = [];
   for (const b of room.bullets) {
+    if (b.kind === 'grenade') {
+      const span = Math.max(1, b.impactAt - b.bornAt);
+      const flight = Math.min(1, (now - b.bornAt) / span);
+      b.x = b.sx + (b.tx - b.sx) * flight;
+      b.y = b.sy + (b.ty - b.sy) * flight;
+      if (now >= b.impactAt) splash(room, b.team, b.tx, b.ty, TYPES.jeep.blastRadius, b.damage, now);
+      else next.push(b);
+      continue;
+    }
     if (now >= b.endAt) continue;
     const travel = Math.hypot(b.vx, b.vy) * dt;
     const substeps = Math.max(1, Math.ceil(travel / 12));
@@ -668,16 +723,24 @@ export function step(room, now = Date.now(), dt = TICK) {
       capture(room, p.team, now); break;
     }
   }
+  const liveMines = [];
+  for (const mine of room.mines) {
+    const victim = now >= mine.armedAt && [...room.players.values()].find(p => p.alive && p.team !== mine.team && p.type !== 'heli' && close(p, mine, 30));
+    if (victim) splash(room, mine.team, mine.x, mine.y, 86, 96, now);
+    else liveMines.push(mine);
+  }
+  room.mines = liveMines;
 }
-export function snapshot(room, now = Date.now()) {
+export function snapshot(room, now = Date.now(), viewerTeam = null) {
   return {
     type: 'state', time: now, scores: room.scores, flags: room.flags, turrets: room.turrets,
     mapId:room.mapId, bridges:room.bridges, wrecks:room.wrecks,
     obstacles: room.obstacles, scenery: room.scenery, trails: room.trails, strikes: room.strikes, drones: room.drones, craters: room.craters,
-    bullets: room.bullets.map(({ id, x, y, team, kind, vx, vy }) => ({ id, x, y, team, kind, vx, vy })),
+    mines: room.mines.filter(m => !viewerTeam || m.team === viewerTeam).map(({ id, x, y, team }) => ({ id, x, y, team })),
+    bullets: room.bullets.map(({ id, x, y, team, kind, vx, vy, bornAt, impactAt }) => ({ id, x, y, team, kind, vx, vy, bornAt, impactAt })),
     explosions: room.explosions,
     announcement: room.announcementUntil > now ? room.announcement : '',
-    players: [...room.players.values()].map(({ id, team, x, y, type, angle, bodyAngle, vx, vy, surface, hp, ammo, fuel, alive, respawnAt }) =>
-      ({ id, team, x, y, type, angle, bodyAngle, vx, vy, surface, hp, ammo, fuel, alive, respawnAt })),
+    players: [...room.players.values()].map(({ id, team, x, y, type, angle, bodyAngle, vx, vy, surface, hp, ammo, mines, fuel, alive, respawnAt }) =>
+      ({ id, team, x, y, type, angle, bodyAngle, vx, vy, surface, hp, ammo, mines: mines || 0, fuel, alive, respawnAt })),
   };
 }

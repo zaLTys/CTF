@@ -2,17 +2,18 @@
 
 An original, playable top-down multiplayer vehicle capture-the-flag game, inspired by classic 1990s vehicular combat games. Everything is original (no Return Fire art, code, music or other copyrighted game assets).
 
-**Engine:** custom HTML5 Canvas 2D and plain JavaScript, Node.js authoritative game server, `ws` WebSocket rooms. No Phaser, Unity or Godot required. Designed for browsers on desktop or phone.
+**Engine:** authoritative Go server (simulation, physics and WebSocket rooms in `sim/` and `main.go`) and a three.js 3D browser client (`public/render3d.js`). Designed for browsers on desktop or phone. The previous Canvas 2D view is still available at `/classic.html`.
 
 ## Run
 
-Requires **Node.js 20+** and an npm connection to install `ws`.
+Requires **Go 1.25+**.
 
 ```bash
-npm install
-npm test
-npm start
+go test ./...
+go run .            # or: go build -o flagrun.exe . && ./flagrun.exe
 ```
+
+Set `PORT` to change the port (default 3000). `-public <dir>` changes the static file directory. The old Node server (`server.js`, `game.js`) is kept only for reference and is no longer needed.
 
 Open **http://localhost:3000**. Choose a map and create a room; another player can join using the room code or copied URL. Up to **4 players (2v2)** per room. For a phone on the same Wi-Fi, open `http://COMPUTER_LAN_IP:3000` and allow TCP/3000 through the machine firewall. Online hosting needs a Node-capable server with HTTPS and WebSocket upgrades.
 
@@ -69,20 +70,25 @@ All maps use 180-degree rotationally symmetric routes/cover for fair starts. A *
 | Aim | Mouse | Right virtual joystick |
 | Fire | Click or Space | Automatic on aim / FIRE button |
 | Switch vehicle at your base | Keys `1`–`6` | Unit selector along bottom |
+| Rotate camera | `Q` / `E` | — |
+| Lay mine (jeep) | `F` | — |
 | Artillery | Aim target point and click to launch timed area strike | Aim direction with right stick, tap STRIKE |
 | FPV | Click to launch, steer with WASD, click to detonate | LAUNCH, steer left stick, DETONATE |
 
 ## Architecture
 
 ```text
-public/index.html + style.css + client.js
-        HTML Canvas 2D / original SVG vehicle sprites / touch UI
-                                 ⇅ WebSocket JSON
-server.js                   HTTP + WebSocket room and player ownership
+public/index.html + client.js   input, HUD, radar, touch sticks
+public/render3d.js              three.js scene: lit low-poly vehicles, shadows,
+                                water, explosions, speed-scaled follow camera
+                                 ⇅ WebSocket JSON (30 Hz sim, 20 Hz snapshots)
+main.go                     HTTP static files + WebSocket rooms (coder/websocket)
                                  ⇣
-game.js                     Server-owned map, bridges, obstacles, wrecks,
-                            vehicles, collisions, projectiles, objectives
+sim/                        Server-owned map, bridges, obstacles, wrecks,
+                            vehicles, collisions, projectiles, mines, objectives
 ```
+
+Snapshots are built per team, so enemy mines never leave the server.
 
 Data contracts:
 - `createRoom(code, mapId)` chooses the map (fallback `causeway`).
@@ -93,7 +99,8 @@ Data contracts:
 ## Developer testing and screenshots
 
 ```bash
-npm test
+go test ./...
+node tools/ws-smoke.mjs 3000     # end-to-end protocol check against a running server
 python tools/make_previews.py    # optional: needs Python playwright and Chromium
 ```
 

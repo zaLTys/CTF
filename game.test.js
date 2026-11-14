@@ -380,6 +380,66 @@ test('W drives and flies along the vehicle nose instead of toward the top of the
   assert.ok(Math.abs(drone.y-y0)<30, `drone stays on heading y=${drone.y}`);
 });
 
+test('jeep grenades follow the crosshair, tank shells follow the turret, rockets follow the hull',()=>{
+  const room=createRoom('AIM'),jeep=addPlayer(room,'jeep'),tank=addPlayer(room,'tank'),asv=addPlayer(room,'asv'),victim=addPlayer(room,'victim');
+  clearTerrain(room);
+  jeep.type='jeep';jeep.ammo=8;jeep.mines=6;jeep.x=700;jeep.y=700;jeep.bodyAngle=0;jeep.angle=0;
+  victim.x=700;victim.y=860;victim.hp=220;
+  const hp=victim.hp;
+  setInput(jeep,{type:'input',dx:0,dy:0,aim:Math.PI/2,fire:true,targetX:700,targetY:860});
+  step(room,500_000);
+  assert.equal(victim.hp,hp,'grenade has not landed yet');
+  assert.equal(room.bullets[0]?.kind,'grenade');
+  assert.ok(room.bullets[0].ty>jeep.y+100,'grenade is thrown toward the crosshair, beside the hull');
+  step(room,500_900);
+  assert.ok(victim.hp<hp,'grenade explodes on the aimed point');
+
+  tank.x=900;tank.y=400;tank.angle=0;tank.bodyAngle=0;tank.ammo=8;
+  setInput(tank,{type:'input',dx:0,dy:0,aim:Math.PI/2,fire:true});
+  step(room,501_000);
+  const shell=room.bullets.find(b=>b.kind==='tank');
+  assert.ok(shell,'tank fires');
+  assert.ok(Math.abs(Math.atan2(shell.vy,shell.vx))<.25,'shell leaves along the turret, which has not snapped to the cursor');
+
+  asv.type='asv';asv.x=1800;asv.y=200;asv.bodyAngle=Math.PI;asv.angle=0;asv.ammo=8;asv.hp=270;
+  setInput(asv,{type:'input',dx:0,dy:0,aim:0,fire:true});
+  step(room,502_000);
+  const rocket=room.bullets.find(b=>b.kind==='asv');
+  assert.ok(rocket&&rocket.vx<0,'rocket leaves along the hull even when the crosshair points the other way');
+});
+
+test('FPV drone stops at the edge of its control link',()=>{
+  const room=createRoom('RANGE'),a=addPlayer(room,'pilot');clearTerrain(room);
+  a.type='fpv';a.ammo=3;a.x=400;a.y=720;
+  setInput(a,{type:'input',dx:1,dy:0,aim:0,fire:true,driveMode:'vector'});
+  step(room,600_000);
+  setInput(a,{type:'input',dx:1,dy:0,aim:0,fire:false,driveMode:'vector'});
+  runTicks(room,90,600_040);
+  const drone=room.drones[0];
+  assert.ok(drone,'drone keeps flying inside the link');
+  assert.ok(Math.hypot(drone.x-a.x,drone.y-a.y)<=TYPES.fpv.range+.5);
+  assert.ok(drone.x>a.x+TYPES.fpv.range-8,'drone reaches the link boundary');
+});
+
+test('mines damage enemies and are omitted from the enemy snapshot',()=>{
+  const room=createRoom('MINES'),a=addPlayer(room,'layer'),b=addPlayer(room,'victim');clearTerrain(room);
+  a.type='jeep';a.mines=4;a.x=500;a.y=700;a.bodyAngle=0;
+  setInput(a,{type:'input',dx:0,dy:0,aim:0,fire:false,mine:true});
+  step(room,700_000);
+  assert.equal(room.mines.length,1);
+  assert.equal(a.mines,3);
+  const mine=room.mines[0];
+  assert.equal(snapshot(room,700_000,a.team).mines.length,1);
+  assert.equal(snapshot(room,700_000,b.team).mines.length,0);
+  b.x=mine.x;b.y=mine.y;b.hp=220;
+  const hp=b.hp;
+  step(room,700_200);
+  assert.equal(b.hp,hp,'mine is not armed the instant it is laid');
+  step(room,700_800);
+  assert.ok(b.hp<hp,'enemy vehicle detonates the hidden mine');
+  assert.equal(room.mines.length,0);
+});
+
 test('bridge collapse sinks vehicles standing on the deck but not a helicopter',()=>{
   const room=createRoom('SINK'),tank=addPlayer(room,'tank'),heli=addPlayer(room,'heli');clearTerrain(room);
   tank.type='tank';tank.x=1130;tank.y=258;tank.hp=130;
