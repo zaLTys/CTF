@@ -22,6 +22,18 @@ func runTicks(r *Room, count int, begin float64) {
 	}
 }
 
+// runUntilDeath steps like runTicks but reports whether p died at any point,
+// since a drowned vehicle respawns at base a few seconds later.
+func runUntilDeath(r *Room, p *Player, count int, begin float64) bool {
+	for i := 0; i < count; i++ {
+		Step(r, begin+float64(i)*1000/30, Tick)
+		if !p.Alive {
+			return true
+		}
+	}
+	return false
+}
+
 func clearTerrain(r *Room) {
 	r.Obstacles, r.Scenery, r.Turrets = nil, nil, nil
 }
@@ -103,7 +115,7 @@ func TestProjectilesHitOnServer(t *testing.T) {
 func TestArtilleryRangeAndDelay(t *testing.T) {
 	r := CreateRoom("ARTY1", "")
 	a, b := AddPlayer(r, "a"), AddPlayer(r, "b")
-	a.Type, a.HP, a.Ammo = "arty", Types["arty"].HP, Types["arty"].Ammo
+	a.Type, a.HP, a.Ammo, a.Deploy = "arty", Types["arty"].HP, Types["arty"].Ammo, Deployed
 	a.X, a.Y, b.X, b.Y = 690, 510, 1010, 510
 	now, hp := 100_000.0, b.HP
 	SetInput(a, input(msg{"fire": true, "targetX": b.X, "targetY": b.Y}))
@@ -119,7 +131,7 @@ func TestArtilleryRangeAndDelay(t *testing.T) {
 func TestArtilleryMinMaxRange(t *testing.T) {
 	r := CreateRoom("ARTY2", "")
 	p := AddPlayer(r, "a")
-	p.Type, p.Ammo = "arty", 12
+	p.Type, p.Ammo, p.Deploy = "arty", 12, Deployed
 	now := 100_000.0
 	SetInput(p, input(msg{"fire": true, "targetX": p.X + 20, "targetY": p.Y}))
 	Step(r, now, Tick)
@@ -231,20 +243,73 @@ func TestRoadsBeatMud(t *testing.T) {
 	check(t, speeds["road"] > speeds["mud"]*1.3, "speeds %v", speeds)
 }
 
-func TestRiversBlockGroundNotHeli(t *testing.T) {
-	for _, kind := range []string{"tank", "heli"} {
+func TestRiversDrownArmorJeepSwimsHeliFlies(t *testing.T) {
+	for _, kind := range []string{"tank", "asv", "arty", "fpv", "jeep", "heli"} {
 		r := CreateRoom("WATER", "")
 		p := AddPlayer(r, "pilot")
 		clearTerrain(r)
 		p.Type, p.X, p.Y, p.BodyAngle, p.Fuel = kind, 910, 390, 0, 100
 		SetInput(p, input(msg{"dx": 1.0}))
-		runTicks(r, 120, 200_000)
-		if kind == "tank" {
-			check(t, p.X < 1020-Types["tank"].Radius+1, "tank stops at bank x=%v", p.X)
-		} else {
-			check(t, p.X > 1180, "helicopter crosses water x=%v", p.X)
+		died := runUntilDeath(r, p, 150, 200_000)
+		switch kind {
+		case "jeep":
+			check(t, !died && p.X > 1100, "jeep swims into the river, died=%v x=%v", died, p.X)
+		case "heli":
+			check(t, !died && p.X > 1180, "helicopter crosses water x=%v", p.X)
+		default:
+			check(t, died && p.X > 1000, "%s drowns in the river (died=%v x=%v)", kind, died, p.X)
+			for _, w := range r.Wrecks {
+				check(t, w.Type != kind, "%s sinks without leaving a wreck", kind)
+			}
 		}
 	}
+}
+
+func TestJeepSwimsAtAThirdOfLandSpeed(t *testing.T) {
+	speeds := map[string]float64{}
+	for _, c := range []struct {
+		where string
+		x, y  float64
+	}{{"land", 560, 420}, {"water", 1040, 390}} {
+		r := CreateRoom("SWIM", "")
+		p := AddPlayer(r, "pilot")
+		clearTerrain(r)
+		p.Type, p.X, p.Y, p.BodyAngle = "jeep", c.x, c.y, -math.Pi/2
+		SetInput(p, input(msg{"dy": -1.0, "driveMode": "classic"}))
+		runTicks(r, 30, 200_000)
+		speeds[c.where] = speedOf(p)
+	}
+	ratio := speeds["water"] / speeds["land"]
+	check(t, ratio > .25 && ratio < .42, "water/land speed ratio %.2f (%v)", ratio, speeds)
+}
+
+func TestIslandCoast(t *testing.T) {
+	for _, id := range []string{"causeway", "delta", "badlands"} {
+		m := Maps[id]
+		check(t, len(m.Coast) > 100, "%s has a coastline", id)
+		for _, b := range Bases {
+			check(t, m.OnIsland(b.X, b.Y, 160), "%s base pad is on dry land", id)
+		}
+		for _, corner := range []Point{{4, 4}, {Width - 4, 4}, {4, Height - 4}, {Width - 4, Height - 4}, {Width / 2, 6}, {6, Height / 2}} {
+			check(t, !m.OnIsland(corner.X, corner.Y, 0), "%s edge %v is sea", id, corner)
+		}
+		for _, o := range scenery[id] {
+			check(t, m.OnIsland(o.X, o.Y, o.Radius), "%s scenery %d at %v,%v is on land", id, o.ID, o.X, o.Y)
+		}
+		for i := 0; i < 400; i++ {
+			x, y := 30+float64(i%20)*117, 20+float64(i/20)*70
+			check(t, m.OnIsland(x, y, 0) == m.OnIsland(Width-x, Height-y, 0), "%s coast keeps 180-degree symmetry at %v,%v", id, x, y)
+		}
+	}
+	r := CreateRoom("SEA", "")
+	clearTerrain(r)
+	tank, jeep := AddPlayer(r, "tank"), AddPlayer(r, "jeep")
+	tank.Type, tank.X, tank.Y, tank.BodyAngle = "tank", 600, 120, -math.Pi/2
+	jeep.Type, jeep.X, jeep.Y, jeep.BodyAngle = "jeep", 900, 120, -math.Pi/2
+	SetInput(tank, input(msg{"dy": -1.0, "driveMode": "classic"}))
+	SetInput(jeep, input(msg{"dy": -1.0, "driveMode": "classic"}))
+	check(t, runUntilDeath(r, tank, 90, 200_000), "tank driving off the island drowns")
+	check(t, jeep.Alive && jeep.Surface == "water" && jeep.Y >= Types["jeep"].Radius, "jeep swims out to the world edge, y=%v", jeep.Y)
 }
 
 func TestTreesBlockJeepButTankCrushes(t *testing.T) {
@@ -291,7 +356,7 @@ func TestArtilleryDamagesCover(t *testing.T) {
 	r := CreateRoom("SPLASH", "")
 	p := AddPlayer(r, "pilot")
 	clearTerrain(r)
-	p.Type, p.X, p.Y, p.Angle, p.BodyAngle = "arty", 380, 720, 0, 0
+	p.Type, p.X, p.Y, p.Angle, p.BodyAngle, p.Deploy = "arty", 380, 720, 0, 0, Deployed
 	r.Scenery = []*Object{
 		{ID: 1, Kind: "tree", X: 755, Y: 720, Radius: 18, HP: 100, MaxHP: 100},
 		{ID: 2, Kind: "bush", X: 802, Y: 712, Radius: 10, HP: 22, MaxHP: 22},
@@ -353,15 +418,14 @@ func TestBridgeCrossingAndCollapse(t *testing.T) {
 	check(t, p.X > 1435, "tank crosses intact bridge x=%v", p.X)
 	r.Bridges[0].HP, r.Bridges[0].Stage = 0, 3
 	p.X, p.Y, p.VX, p.VY, p.BodyAngle = 910, 255, 0, 0, 0
-	runTicks(r, 120, 210_000)
-	check(t, p.X < 1020-Types["tank"].Radius+1, "tank stops at broken crossing x=%v", p.X)
+	check(t, runUntilDeath(r, p, 120, 210_000), "tank drives off the broken crossing and drowns")
 }
 
 func TestArtilleryCollapsesBridge(t *testing.T) {
 	r := CreateRoom("BOOM", "")
 	p := AddPlayer(r, "pilot")
 	clearTerrain(r)
-	p.Type, p.HP, p.Ammo, p.X, p.Y, p.BodyAngle = "arty", Types["arty"].HP, 12, 845, 258, 0
+	p.Type, p.HP, p.Ammo, p.X, p.Y, p.BodyAngle, p.Deploy = "arty", Types["arty"].HP, 12, 845, 258, 0, Deployed
 	b, start := r.Bridges[0], 100_000.0
 	for i := 0; i < 3; i++ {
 		now := start + float64(i)*3000
@@ -382,7 +446,7 @@ func TestBuildingCollapseStages(t *testing.T) {
 	target := r.Map.Buildings[0]
 	building := &Object{ID: 99, Kind: "building", X: target.X, Y: target.Y, W: target.W, H: target.H, HP: 300, MaxHP: 300}
 	r.Obstacles = []*Object{building}
-	p.X, p.Y, p.Type, p.Ammo, p.HP = 700, 510, "arty", 12, Types["arty"].HP
+	p.X, p.Y, p.Type, p.Ammo, p.HP, p.Deploy = 700, 510, "arty", 12, Types["arty"].HP, Deployed
 	for i := 0; i < 3; i++ {
 		now := 100_000 + float64(i)*3000
 		SetInput(p, input(msg{"fire": true, "targetX": target.X + target.W/2, "targetY": target.Y + target.H/2}))
@@ -570,16 +634,178 @@ func TestBridgeCollapseSinksGroundNotHeli(t *testing.T) {
 	tank.Type, tank.X, tank.Y, tank.HP = "tank", 1130, 258, 130
 	heli.Type, heli.X, heli.Y, heli.HP = "heli", 1210, 260, 125
 	arty := AddPlayer(r, "artillery")
-	arty.Type, arty.X, arty.Y, arty.Ammo = "arty", 820, 260, 12
+	arty.Type, arty.X, arty.Y, arty.Ammo, arty.Deploy = "arty", 820, 260, 12, Deployed
 	r.Bridges[0].HP, r.Bridges[0].Stage = 95, 2
 	SetInput(arty, input(msg{"fire": true, "targetX": 1180.0, "targetY": 255.0}))
 	Step(r, 100_000, Tick)
 	Step(r, 101_300, Tick)
 	check(t, r.Bridges[0].HP == 0, "bridge collapses")
 	check(t, !tank.Alive && heli.Alive, "tank sinks, heli survives")
-	sunk := false
 	for _, w := range r.Wrecks {
-		sunk = sunk || w.Type == "tank"
+		check(t, w.Type != "tank", "sunken tank leaves no wreck in the river")
 	}
-	check(t, sunk, "tank wreck recorded")
+}
+
+func TestArtilleryDeployShootPackCycle(t *testing.T) {
+	r := CreateRoom("ARTY3", "")
+	clearTerrain(r)
+	p := AddPlayer(r, "a")
+	p.Type, p.Ammo, p.X, p.Y, p.BodyAngle = "arty", 12, 600, 720, 0
+	target := msg{"targetX": 1000.0, "targetY": 720.0}
+	fire := func(on bool) msg {
+		m := input(target)
+		m["fire"] = on
+		return m
+	}
+	now := 100_000.0
+	SetInput(p, fire(true))
+	Step(r, now, Tick)
+	check(t, p.Deploy == Deploying && len(r.Strikes) == 0, "first click deploys instead of firing")
+	SetInput(p, fire(false))
+	Step(r, now+500, Tick)
+	SetInput(p, fire(true))
+	Step(r, now+600, Tick)
+	check(t, len(r.Strikes) == 0, "cannot fire while still deploying")
+	SetInput(p, fire(false))
+	Step(r, now+ArtyDeployMs+10, Tick)
+	check(t, p.Deploy == Deployed, "deployed after %v ms, got %q", ArtyDeployMs, p.Deploy)
+	SetInput(p, fire(true))
+	Step(r, now+ArtyDeployMs+50, Tick)
+	check(t, len(r.Strikes) == 1, "second click fires")
+
+	drive := input(msg{"dy": -1.0, "driveMode": "classic"})
+	SetInput(p, drive)
+	x := p.X
+	begin := now + 4000
+	runTicks(r, 30, begin)
+	check(t, p.Deploy == Packing && math.Abs(p.X-x) < 1, "packing holds the gun in place, moved %.1f", p.X-x)
+	runTicks(r, 45, begin+1000)
+	check(t, p.Deploy == "" && p.X-x > 5, "drives away once packed, moved %.1f", p.X-x)
+
+	SetInput(p, input(msg{"dy": -1.0, "driveMode": "classic", "fire": true}))
+	Step(r, begin+3000, Tick)
+	check(t, p.Deploy == Deploying, "fire while driving deploys again")
+}
+
+func TestVehicleLimitsAndRespawnChoice(t *testing.T) {
+	r := CreateRoom("LIMIT", "")
+	a, _, c := AddPlayer(r, "a"), AddPlayer(r, "b"), AddPlayer(r, "c")
+	check(t, a.Team == c.Team, "a and c are teammates")
+	check(t, a.Type == "tank" && c.Type == "jeep", "second teammate falls back to a jeep, got %s/%s", a.Type, c.Type)
+	SetInput(c, msg{"type": "vehicle", "vehicle": "tank"})
+	check(t, c.Type == "jeep", "cannot take a teammate's tank")
+	SetInput(c, msg{"type": "vehicle", "vehicle": "heli"})
+	check(t, c.Type == "heli", "free vehicle can be chosen at base")
+	SetInput(a, msg{"type": "vehicle", "vehicle": "jeep"})
+	SetInput(c, msg{"type": "vehicle", "vehicle": "jeep"})
+	check(t, a.Type == "jeep" && c.Type == "jeep", "jeeps are unlimited")
+
+	now := 100_000.0
+	SelfDestruct(r, a, now)
+	check(t, !a.Alive && a.RespawnAt == now+SelfDestructRespawnMs, "self-destruct waits %v ms", SelfDestructRespawnMs)
+	SetInput(a, msg{"type": "vehicle", "vehicle": "arty"})
+	check(t, a.NextType == "arty", "choice queued while waiting")
+	Step(r, now+RespawnMs+100, Tick)
+	check(t, !a.Alive, "still waiting after a normal respawn delay")
+	Step(r, now+SelfDestructRespawnMs+10, Tick)
+	check(t, a.Alive && a.Type == "arty", "respawns in the queued vehicle, got alive=%v %s", a.Alive, a.Type)
+}
+
+func TestJeepOffshoreCountdown(t *testing.T) {
+	r := CreateRoom("OFFSH", "")
+	clearTerrain(r)
+	p := AddPlayer(r, "a")
+	p.Type, p.X, p.Y, p.BodyAngle = "jeep", 900, 30, -math.Pi/2
+	SetInput(p, input(msg{"dy": -1.0, "driveMode": "classic"}))
+	now := 200_000.0
+	for i := 0; i < 60 && p.Y >= 0; i++ {
+		Step(r, now, Tick)
+		now += 1000.0 / 30
+	}
+	check(t, p.Y < 0 && p.Alive, "jeep swims past the old edge, y=%v", p.Y)
+	runTicks(r, 2, now)
+	check(t, p.DrownAt > 0 && p.Alive, "countdown starts offshore")
+	SetInput(p, input(msg{"dy": 1.0, "driveMode": "classic"}))
+	check(t, !runUntilDeath(r, p, 90, now+100), "turning back in time survives")
+	check(t, p.DrownAt == 0, "countdown clears back in safe water, y=%v", p.Y)
+	p.X, p.Y = 900, -200
+	SetInput(p, input(nil))
+	check(t, runUntilDeath(r, p, int(OffshoreGraceMs/1000*30)+15, now+4000), "stays out too long and drowns")
+}
+
+func TestFlagSlowsCarrier(t *testing.T) {
+	speeds := map[bool]float64{}
+	for _, carrying := range []bool{false, true} {
+		r := CreateRoom("SLOW", "")
+		clearTerrain(r)
+		p := AddPlayer(r, "a")
+		p.Type, p.X, p.Y, p.BodyAngle = "jeep", 600, 720, 0
+		if carrying {
+			r.Flags["red"].CarriedBy = p.ID
+		}
+		SetInput(p, input(msg{"dy": -1.0, "driveMode": "classic"}))
+		runTicks(r, 30, 200_000)
+		speeds[carrying] = speedOf(p)
+	}
+	check(t, speeds[true] < speeds[false]*.9, "flag carrier is slower %v", speeds)
+}
+
+func TestGatesOpenOnlyForFriendlies(t *testing.T) {
+	r := CreateRoom("GATES", "")
+	r.Scenery, r.Turrets = nil, nil
+	blue, red := AddPlayer(r, "blue"), AddPlayer(r, "red")
+	check(t, blue.Team == "blue" && red.Team == "red", "teams")
+	var gate *Object
+	for _, o := range r.Obstacles {
+		if o.Kind == "gate" && o.Team == "blue" && o.H > o.W {
+			gate = o
+		}
+	}
+	check(t, gate != nil, "blue HQ has an east gate")
+	gy := gate.Y + gate.H/2
+	for _, p := range []*Player{blue, red} {
+		p.Type, p.X, p.Y, p.BodyAngle, p.VX, p.VY = "jeep", gate.X-60, gy, 0, 0, 0
+		if p == red {
+			p.X, p.BodyAngle = gate.X+gate.W+60, math.Pi
+		}
+	}
+	blue.Y, red.Y = gy-30, gy+30
+	SetInput(blue, input(msg{"dy": -1.0, "driveMode": "classic"}))
+	SetInput(red, input(msg{"dy": -1.0, "driveMode": "classic"}))
+	runTicks(r, 30, 200_000)
+	check(t, blue.X > gate.X+gate.W, "blue jeep drives out through its own gate, x=%v gate=%v", blue.X, gate.X)
+	check(t, red.X > gate.X+gate.W, "red jeep is stopped at the closed gate, x=%v gate=%v", red.X, gate.X)
+}
+
+func TestWallsBlockEnemyShotsButNotDefenders(t *testing.T) {
+	r := CreateRoom("WALLS", "")
+	r.Scenery, r.Turrets = nil, nil
+	var wall *Object
+	for _, o := range r.Obstacles {
+		if o.Kind == "wall" && o.Team == "blue" && o.H > o.W && o.X < 100 {
+			wall = o
+		}
+	}
+	check(t, wall != nil, "blue HQ has a west wall")
+	y := wall.Y + 60
+	r.Bullets = []*Bullet{
+		{ID: "own", Team: "blue", Kind: "tank", X: wall.X - 20, Y: y, VX: 630, Damage: 35, Radius: 5, EndAt: 1e12},
+		{ID: "foe", Team: "red", Kind: "tank", X: wall.X - 20, Y: y + 40, VX: 630, Damage: 35, Radius: 5, EndAt: 1e12},
+	}
+	hp := wall.HP
+	runTicks(r, 3, 200_000)
+	check(t, wall.HP == hp-35, "only the enemy shell hits the wall, hp %v -> %v", hp, wall.HP)
+	own := false
+	for _, b := range r.Bullets {
+		own = own || b.ID == "own"
+	}
+	check(t, own, "the defender's shell passes over its own wall")
+}
+
+func TestTurretLeadsMovingTarget(t *testing.T) {
+	p := &Player{X: 400, Y: 0, VX: 0, VY: 200}
+	a := leadAngle(0, 0, p, TurretShellSpeed)
+	check(t, a > .05, "turret aims ahead of a crossing target, angle %v", a)
+	still := &Player{X: 400, Y: 0}
+	check(t, math.Abs(leadAngle(0, 0, still, TurretShellSpeed)) < 1e-9, "aims straight at a parked target")
 }

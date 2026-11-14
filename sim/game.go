@@ -62,7 +62,68 @@ type Player struct {
 	FireLatch bool
 	MineLatch bool
 	Input     Input
+	// Artillery only: "" (mobile), Deploying, Deployed or Packing.
+	Deploy        string
+	DeployUntil   float64
+	DeployedSince float64
+	// NextType is the vehicle this player respawns in (their last choice).
+	NextType string
+	// DrownAt counts down while a jeep is out past the island's safe waters.
+	DrownAt float64
+	room    *Room
 }
+
+const (
+	RespawnMs             = 2400.0
+	SelfDestructRespawnMs = 6000.0
+	// SeaMargin is how far past the world rectangle a swimming jeep may go;
+	// out there it has OffshoreGraceMs to turn back before it is swamped.
+	SeaMargin       = 340.0
+	OffshoreGraceMs = 5000.0
+)
+
+// VehicleLimits caps each vehicle per team; the jeep is unlimited.
+var VehicleLimits = map[string]int{"tank": 1, "heli": 1, "asv": 1, "arty": 1, "fpv": 1}
+
+func (p *Player) occupies() string {
+	if p.Alive {
+		return p.Type
+	}
+	return p.NextType
+}
+
+// VehicleTaken reports whether p's teammates already use up the limit for kind.
+func VehicleTaken(r *Room, p *Player, kind string) bool {
+	limit, capped := VehicleLimits[kind]
+	if !capped {
+		return false
+	}
+	used := 0
+	for _, q := range r.Players {
+		if q != p && q.Team == p.Team && q.occupies() == kind {
+			used++
+		}
+	}
+	return used >= limit
+}
+
+func (r *Room) carrying(p *Player) bool {
+	for _, f := range r.Flags {
+		if f.CarriedBy == p.ID {
+			return true
+		}
+	}
+	return false
+}
+
+const (
+	Deploying     = "deploying"
+	Deployed      = "deployed"
+	Packing       = "packing"
+	ArtyDeployMs  = 1800.0
+	ArtyPackMs    = 1400.0
+	artyMoveInput = .15
+)
 
 type Flag struct {
 	X         float64 `json:"x"`
@@ -105,6 +166,7 @@ type Explosion struct {
 	BornAt float64 `json:"bornAt"`
 	Until  float64 `json:"until"`
 	Scale  float64 `json:"scale"`
+	Kind   string  `json:"kind,omitempty"`
 }
 
 type Crater struct {
@@ -183,7 +245,7 @@ func dist2(ax, ay, bx, by float64) float64 {
 	return (ax-bx)*(ax-bx) + (ay-by)*(ay-by)
 }
 func near(ax, ay, bx, by, r float64) bool { return dist2(ax, ay, bx, by) < r*r }
-func angleDelta(a, b float64) float64      { return math.Atan2(math.Sin(b-a), math.Cos(b-a)) }
+func angleDelta(a, b float64) float64     { return math.Atan2(math.Sin(b-a), math.Cos(b-a)) }
 func approach(v, goal, maxChange float64) float64 {
 	return v + clamp(goal-v, -maxChange, maxChange)
 }
@@ -245,6 +307,17 @@ func newObstacles(m *MapDef) []*Object {
 	for i, c := range supplyCrates {
 		out = append(out, &Object{ID: 200 + i, Kind: "crate", X: c.X, Y: c.Y, W: c.W, H: c.H, HP: 65, MaxHP: 65})
 	}
+	id := 300
+	for _, team := range []string{"blue", "red"} {
+		for _, p := range baseWalls[team] {
+			kind, hp := "wall", 240.0
+			if p.gate {
+				kind, hp = "gate", 320
+			}
+			out = append(out, &Object{ID: id, Kind: kind, Team: team, X: p.X, Y: p.Y, W: p.W, H: p.H, HP: hp, MaxHP: hp})
+			id++
+		}
+	}
 	return out
 }
 
@@ -300,8 +373,15 @@ func (r *Room) Player(id string) *Player {
 	return nil
 }
 
-func spawn(p *Player) {
+func spawn(r *Room, p *Player) {
 	base := Bases[p.Team]
+	kind := p.NextType
+	for _, fallback := range []string{"tank", "jeep"} {
+		if Types[kind] != nil && !VehicleTaken(r, p, kind) {
+			break
+		}
+		kind = fallback
+	}
 	if p.Team == "blue" {
 		p.X = base.X + 70
 		p.Angle = 0
@@ -310,16 +390,18 @@ func spawn(p *Player) {
 		p.Angle = math.Pi
 	}
 	p.Y = base.Y + float64(p.Slot%4)*46 - 69
-	p.Type = "tank"
+	p.Type, p.NextType = kind, kind
 	p.BodyAngle = p.Angle
 	p.VX, p.VY = 0, 0
+	p.Deploy = ""
+	p.DrownAt = 0
 	p.Surface = "road"
 	p.LastTrail, p.LastRamAt = 0, 0
-	t := Types["tank"]
+	t := Types[kind]
 	p.HP, p.Ammo, p.Fuel = t.HP, t.Ammo, t.Fuel
 	p.NextFire = 0
 	p.FireLatch = false
-	p.Mines, p.NextMine, p.MineLatch = 0, 0, false
+	p.Mines, p.NextMine, p.MineLatch = t.Mines, 0, false
 	p.Input = Input{Aim: p.Angle, TargetX: p.X, TargetY: p.Y, DriveMode: "vector"}
 	p.RespawnAt = 0
 	p.Alive = true
@@ -342,8 +424,8 @@ func AddPlayer(r *Room, id string) *Player {
 	if blues <= len(r.Players)-blues {
 		team = "blue"
 	}
-	p := &Player{ID: id, Team: team, Slot: len(r.Players)}
-	spawn(p)
+	p := &Player{ID: id, Team: team, Slot: len(r.Players), room: r}
+	spawn(r, p)
 	r.Players = append(r.Players, p)
 	r.UpdatedAt = nowMs()
 	return p
@@ -430,15 +512,33 @@ func SetInput(p *Player, m map[string]any) {
 	case "vehicle":
 		kind, _ := m["vehicle"].(string)
 		t, ok := Types[kind]
+		if !ok || (p.room != nil && VehicleTaken(p.room, p, kind)) {
+			return
+		}
+		if !p.Alive {
+			// Waiting to respawn: queue the choice for the next spawn.
+			p.NextType = kind
+			return
+		}
 		base := Bases[p.Team]
-		if ok && p.Alive && near(p.X, p.Y, base.X, base.Y, 155) {
-			p.Type = kind
+		if near(p.X, p.Y, base.X, base.Y, 155) {
+			p.Type, p.NextType = kind, kind
 			p.HP, p.Ammo, p.Fuel = t.HP, t.Ammo, t.Fuel
 			p.Mines, p.NextMine, p.MineLatch = t.Mines, 0, false
 			p.NextFire, p.FireLatch = 0, false
 			p.VX, p.VY = 0, 0
+			p.Deploy = ""
 		}
 	}
+}
+
+// SelfDestruct blows up p's vehicle; the respawn wait is longer than a normal death.
+func SelfDestruct(r *Room, p *Player, now float64) {
+	if !p.Alive {
+		return
+	}
+	kill(r, p, now)
+	p.RespawnAt = now + SelfDestructRespawnMs
 }
 
 type hit struct {
@@ -451,30 +551,15 @@ func (h *hit) cleared() bool { return h.obj != nil && h.obj.HP == 0 }
 
 func collisionAt(r *Room, p *Player, x, y float64) *hit {
 	rad := Types[p.Type].Radius
-	if x < rad || y < rad || x > Width-rad || y > Height-rad {
+	lo, hiX, hiY := rad, Width-rad, Height-rad
+	if p.Type == "jeep" {
+		lo, hiX, hiY = lo-SeaMargin, hiX+SeaMargin, hiY+SeaMargin
+	}
+	if x < lo || y < lo || x > hiX || y > hiY {
 		return &hit{kind: "edge"}
 	}
 	if p.Type == "heli" {
 		return nil
-	}
-	inWater := false
-	for _, w := range r.Map.Water {
-		if circleRect(x, y, rad, w) {
-			inWater = true
-			break
-		}
-	}
-	if inWater {
-		onBridge := false
-		for _, b := range r.Bridges {
-			if b.HP > 0 && x >= b.X && x <= b.X+b.W && y >= b.Y+rad*.35 && y <= b.Y+b.H-rad*.35 {
-				onBridge = true
-				break
-			}
-		}
-		if !onBridge {
-			return &hit{kind: "water"}
-		}
 	}
 	for _, q := range r.Players {
 		if q.ID != p.ID && q.Alive && hypot(q.X-x, q.Y-y) < Types[q.Type].Radius+rad-1 {
@@ -487,7 +572,10 @@ func collisionAt(r *Room, p *Player, x, y float64) *hit {
 		}
 	}
 	for _, o := range r.Obstacles {
-		if o.HP > 0 && circleRect(x, y, rad, o.rect()) {
+		if o.HP <= 0 || (o.Kind == "gate" && o.Team == p.Team) {
+			continue
+		}
+		if circleRect(x, y, rad, o.rect()) {
 			return &hit{kind: o.Kind, obj: o}
 		}
 	}
@@ -497,6 +585,27 @@ func collisionAt(r *Room, p *Player, x, y float64) *hit {
 		}
 	}
 	return nil
+}
+
+// inWater reports whether a ground vehicle centred at (x, y) would be afloat: out
+// at sea or in a river, and not on an intact bridge deck.
+func inWater(r *Room, x, y float64) bool {
+	wet := !r.Map.OnIsland(x, y, 0)
+	for _, w := range r.Map.Water {
+		if wet {
+			break
+		}
+		wet = x >= w.X && x <= w.X+w.W && y >= w.Y && y <= w.Y+w.H
+	}
+	if !wet {
+		return false
+	}
+	for _, b := range r.Bridges {
+		if b.HP > 0 && x >= b.X && x <= b.X+b.W && y >= b.Y && y <= b.Y+b.H {
+			return false
+		}
+	}
+	return true
 }
 
 func destroyScenery(r *Room, o *Object, now float64) {
@@ -551,6 +660,10 @@ func damageObject(r *Room, o *Object, damage, now float64) {
 			}
 			boom(r, o.X+o.W*fx, o.Y+o.H*.5, now, scale)
 		}
+	case (o.Kind == "wall" || o.Kind == "gate") && o.HP == 0 && before > 0:
+		boom(r, o.X+o.W/2, o.Y+o.H/2, now, 1.3)
+		r.Announcement = upper(o.Team) + " " + upper(o.Kind) + " BREACHED"
+		r.AnnouncementUntil = now + 2000
 	case o.Kind == "wreck" && o.HP == 0:
 		boom(r, o.X, o.Y, now, .95)
 	}
@@ -638,12 +751,21 @@ func moveVehicle(r *Room, p *Player, t *VehicleType, dt, now float64) {
 		p.BodyAngle += clamp(angleDelta(p.BodyAngle, in.Aim), -t.TurnRate*dt, t.TurnRate*dt)
 	} else {
 		p.Surface = SurfaceAt(p.X, p.Y, r.MapID)
+		if inWater(r, p.X, p.Y) {
+			p.Surface = "water"
+		}
 		tSpeed, tAccel, tGrip := .95, .95, 1.0
 		switch p.Surface {
+		case "water":
+			// Only the jeep stays afloat: wheels up, a third of its land pace, loose steering.
+			tSpeed, tAccel, tGrip = 1.0/3, .4, .45
 		case "road":
 			tSpeed, tAccel, tGrip = 1.16, 1.08, 1.25
 		case "mud":
 			tSpeed, tAccel, tGrip = .61, .68, .58
+		}
+		if r.carrying(p) {
+			tSpeed, tAccel = tSpeed*.82, tAccel*.88
 		}
 		forwardSpeed := p.VX*math.Cos(p.BodyAngle) + p.VY*math.Sin(p.BodyAngle)
 		throttle, steering := 0.0, 0.0
@@ -729,7 +851,7 @@ func moveVehicle(r *Room, p *Player, t *VehicleType, dt, now float64) {
 		}
 	}
 	speed := hypot(p.VX, p.VY)
-	if p.Type != "heli" && speed > 68 && now-p.LastTrail > 160 {
+	if p.Type != "heli" && p.Surface != "water" && speed > 68 && now-p.LastTrail > 160 {
 		kind := "track"
 		if speed > t.Speed*.76 {
 			kind = "skid"
@@ -761,7 +883,7 @@ func fireBullet(r *Room, s shooter, now float64) {
 		speed, damage = t.BulletSpeed, t.Damage
 	}
 	if s.automated {
-		damage = 15
+		speed, damage = TurretShellSpeed, TurretDamage
 	}
 	muzzle, radius, life := 29.0, 5.0, 1550.0
 	if s.kind == "heli" {
@@ -819,6 +941,9 @@ func layMine(r *Room, p *Player, now float64) {
 	}
 	x := clamp(p.X-math.Cos(p.BodyAngle)*24, 18, Width-18)
 	y := clamp(p.Y-math.Sin(p.BodyAngle)*24, 18, Height-18)
+	if inWater(r, x, y) {
+		return
+	}
 	r.Mines = append(r.Mines, Mine{ID: NewID(), Team: p.Team, X: x, Y: y, ArmedAt: now + 650})
 	friendly, first := 0, -1
 	for i, m := range r.Mines {
@@ -851,11 +976,13 @@ func kill(r *Room, p *Player, now float64) {
 	// Do not choke the friendly garage/spawn area with an unavoidable wreck.
 	nearBase := false
 	for _, b := range Bases {
-		if hypot(b.X-p.X, b.Y-p.Y) < 175 {
+		if hypot(b.X-p.X, b.Y-p.Y) < 245 {
 			nearBase = true
 		}
 	}
-	if !nearBase {
+	// Anything that dies over water sinks: a splash, and no wreck left to block the jeep.
+	sunk := inWater(r, p.X, p.Y)
+	if !nearBase && !sunk {
 		r.nextWreckID++
 		r.Wrecks = append(r.Wrecks, &Object{ID: 1000 + r.nextWreckID, Kind: "wreck", Team: p.Team, Type: p.Type,
 			X: p.X, Y: p.Y, Angle: p.BodyAngle, Radius: math.Max(19, Types[p.Type].Radius),
@@ -865,9 +992,15 @@ func kill(r *Room, p *Player, now float64) {
 		}
 	}
 	p.Alive = false
-	p.RespawnAt = now + 2400
+	p.DrownAt = 0
+	p.RespawnAt = now + RespawnMs
 	p.HP = 0
-	boom(r, p.X, p.Y, now, 1.9)
+	if sunk {
+		boom(r, p.X, p.Y, now, 1.6)
+		r.Explosions[len(r.Explosions)-1].Kind = "splash"
+	} else {
+		boom(r, p.X, p.Y, now, 1.9)
+	}
 	drones := r.Drones[:0]
 	for _, d := range r.Drones {
 		if d.OwnerID != p.ID {
@@ -879,6 +1012,10 @@ func kill(r *Room, p *Player, now float64) {
 		if f.CarriedBy == p.ID {
 			f.CarriedBy, f.Dropped, f.ReturnAt = "", true, now+18000
 			f.X, f.Y = p.X, p.Y
+			if f.X < 0 || f.Y < 0 || f.X > Width || f.Y > Height {
+				// Lost at sea: nobody could reach it, so it goes straight home.
+				f.ReturnAt = now
+			}
 		}
 	}
 }
@@ -892,7 +1029,7 @@ func capture(r *Room, team string, now float64) {
 	resetFlag(r, "blue")
 	resetFlag(r, "red")
 	for _, p := range r.Players {
-		spawn(p)
+		spawn(r, p)
 	}
 	r.Turrets = newTurrets()
 	r.Obstacles = newObstacles(r.Map)
@@ -939,7 +1076,7 @@ func splash(r *Room, team string, x, y, radius, damage, now float64) {
 		}
 	}
 	for _, c := range r.Obstacles {
-		if c.HP <= 0 {
+		if c.HP <= 0 || c.Team == team {
 			continue
 		}
 		nx, ny := clamp(x, c.X, c.X+c.W), clamp(y, c.Y, c.Y+c.H)
@@ -1035,7 +1172,7 @@ func stepPlayers(r *Room, now, dt float64) {
 	for _, p := range r.Players {
 		if !p.Alive {
 			if now >= p.RespawnAt {
-				spawn(p)
+				spawn(r, p)
 			} else {
 				continue
 			}
@@ -1045,8 +1182,39 @@ func stepPlayers(r *Room, now, dt float64) {
 		if p.Type == "fpv" {
 			activeDrone = r.droneOf(p.ID)
 		}
+		justFired := p.Input.Fire && !p.FireLatch
+		p.FireLatch = p.Input.Fire
+		if p.Type == "arty" {
+			stepDeploy(p, justFired, now)
+		}
 		if activeDrone == nil {
-			moveVehicle(r, p, t, dt, now)
+			if p.Type == "arty" && p.Deploy != "" {
+				// Planted or (un)limbering: no drive, and the hull settles quickly.
+				in := p.Input
+				p.Input.DX, p.Input.DY = 0, 0
+				moveVehicle(r, p, t, dt, now)
+				p.Input = in
+				damp := math.Exp(-6 * dt)
+				p.VX, p.VY = p.VX*damp, p.VY*damp
+			} else {
+				moveVehicle(r, p, t, dt, now)
+			}
+			if p.Type != "heli" && p.Type != "jeep" && inWater(r, p.X, p.Y) {
+				kill(r, p, now)
+				continue
+			}
+			if p.Type == "jeep" {
+				if p.X < 0 || p.Y < 0 || p.X > Width || p.Y > Height {
+					if p.DrownAt == 0 {
+						p.DrownAt = now + OffshoreGraceMs
+					} else if now >= p.DrownAt {
+						kill(r, p, now)
+						continue
+					}
+				} else {
+					p.DrownAt = 0
+				}
+			}
 		}
 		aim := math.Atan2(math.Sin(p.Input.Aim), math.Cos(p.Input.Aim))
 		if p.Type == "tank" {
@@ -1054,8 +1222,6 @@ func stepPlayers(r *Room, now, dt float64) {
 		} else {
 			p.Angle = aim
 		}
-		justFired := p.Input.Fire && !p.FireLatch
-		p.FireLatch = p.Input.Fire
 		justMine := p.Input.Mine && !p.MineLatch
 		p.MineLatch = p.Input.Mine
 		if justMine {
@@ -1076,7 +1242,7 @@ func stepPlayers(r *Room, now, dt float64) {
 				launchDrone(r, p, now)
 			}
 		case p.Type == "arty":
-			if justFired && p.Ammo > 0 && now >= p.NextFire {
+			if p.Deploy == Deployed && p.DeployedSince < now && justFired && p.Ammo > 0 && now >= p.NextFire {
 				tx, ty := p.Input.TargetX, p.Input.TargetY
 				// Minimum safe range and an enforced maximum to keep artillery counter-play fair.
 				if d := hypot(tx-p.X, ty-p.Y); d >= 145 && d <= t.Range {
@@ -1105,6 +1271,34 @@ func stepPlayers(r *Room, now, dt float64) {
 			if p.Type == "jeep" {
 				p.Mines = math.Min(Types["jeep"].Mines, p.Mines+dt*1.2)
 			}
+		}
+	}
+}
+
+// stepDeploy runs the artillery cycle: fire while mobile deploys, fire while
+// deployed shoots, driving input while deployed packs up, and fire while
+// packing re-deploys in the time already spent packing.
+func stepDeploy(p *Player, justFired bool, now float64) {
+	moving := hypot(p.Input.DX, p.Input.DY) > artyMoveInput
+	switch p.Deploy {
+	case "":
+		if justFired {
+			p.Deploy, p.DeployUntil = Deploying, now+ArtyDeployMs
+		}
+	case Deploying:
+		if now >= p.DeployUntil {
+			p.Deploy, p.DeployedSince = Deployed, now
+		}
+	case Deployed:
+		if moving && !justFired {
+			p.Deploy, p.DeployUntil = Packing, now+ArtyPackMs
+		}
+	case Packing:
+		if justFired {
+			packed := 1 - math.Max(0, p.DeployUntil-now)/ArtyPackMs
+			p.Deploy, p.DeployUntil = Deploying, now+ArtyDeployMs*packed
+		} else if now >= p.DeployUntil {
+			p.Deploy = ""
 		}
 	}
 }
@@ -1187,6 +1381,39 @@ func stepStrikes(r *Room, now float64) {
 	r.Strikes = remaining
 }
 
+const (
+	TurretRange      = 420.0
+	TurretShellSpeed = 660.0
+	TurretReloadMs   = 700.0
+	TurretDamage     = 26.0
+)
+
+// leadAngle aims where a moving target will be when a shell of the given speed
+// arrives, falling back to aiming straight at it when no intercept exists.
+func leadAngle(x, y float64, p *Player, speed float64) float64 {
+	dx, dy := p.X-x, p.Y-y
+	a := p.VX*p.VX + p.VY*p.VY - speed*speed
+	b := 2 * (dx*p.VX + dy*p.VY)
+	c := dx*dx + dy*dy
+	t := -1.0
+	if math.Abs(a) < 1e-6 {
+		if b < 0 {
+			t = -c / b
+		}
+	} else if disc := b*b - 4*a*c; disc >= 0 {
+		s := math.Sqrt(disc)
+		for _, cand := range []float64{(-b - s) / (2 * a), (-b + s) / (2 * a)} {
+			if cand > 0 && (t < 0 || cand < t) {
+				t = cand
+			}
+		}
+	}
+	if t < 0 || t > 1.5 {
+		return math.Atan2(dy, dx)
+	}
+	return math.Atan2(dy+p.VY*t, dx+p.VX*t)
+}
+
 func stepTurrets(r *Room, now float64) {
 	for _, t := range r.Turrets {
 		if t.HP <= 0 {
@@ -1194,7 +1421,7 @@ func stepTurrets(r *Room, now float64) {
 		}
 		var target *Player
 		for _, p := range r.Players {
-			if !p.Alive || p.Team == t.Team || !near(t.X, t.Y, p.X, p.Y, 385) {
+			if !p.Alive || p.Team == t.Team || !near(t.X, t.Y, p.X, p.Y, TurretRange) {
 				continue
 			}
 			if target == nil || dist2(t.X, t.Y, p.X, p.Y) < dist2(t.X, t.Y, target.X, target.Y) {
@@ -1202,9 +1429,9 @@ func stepTurrets(r *Room, now float64) {
 			}
 		}
 		if target != nil {
-			t.Angle = math.Atan2(target.Y-t.Y, target.X-t.X)
+			t.Angle = leadAngle(t.X, t.Y, target, TurretShellSpeed)
 			if now >= t.NextFire {
-				t.NextFire = now + 1050
+				t.NextFire = now + TurretReloadMs
 				fireBullet(r, shooter{team: t.Team, kind: "turret", x: t.X, y: t.Y, angle: t.Angle, automated: true}, now)
 			}
 		}
@@ -1247,7 +1474,8 @@ func advanceBullet(r *Room, b *Bullet, now, dt float64) bool {
 		b.Y += b.VY * dt / float64(substeps)
 		var struck *Object
 		for _, c := range r.Obstacles {
-			if c.HP > 0 && circleRect(b.X, b.Y, b.Radius, c.rect()) {
+			// Defenders fire out over their own walls and through their own gates.
+			if c.HP > 0 && c.Team != b.Team && circleRect(b.X, b.Y, b.Radius, c.rect()) {
 				struck = c
 				break
 			}

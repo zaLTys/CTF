@@ -127,6 +127,12 @@ func (h *hub) handle(c *client, raw []byte) {
 				sim.SetInput(p, m)
 			}
 		}
+	case "selfdestruct":
+		if r := h.rooms[c.roomCode]; r != nil {
+			if p := r.Player(c.playerID); p != nil {
+				sim.SelfDestruct(r, p, nowMs())
+			}
+		}
 	}
 }
 

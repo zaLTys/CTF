@@ -1,4 +1,5 @@
-import { Renderer3D } from './render3d.js';
+import { Renderer3D, deployProgress } from './render3d.js';
+import { Sound } from './sound.js';
 
 const $ = id => document.getElementById(id);
 const canvas = $('battle');
@@ -14,6 +15,10 @@ const touch = { moving: false, aiming: false, dx: 0, dy: 0, aimX: 1, aimY: 0 };
 const colors = { blue: '#68c8db', red: '#f17f6c' };
 const params = new URLSearchParams(location.search);
 const coarse = matchMedia('(pointer: coarse)').matches;
+const sound = new Sound();
+const heard = { bullets: new Set(), explosions: new Set(), strikes: new Set() };
+let destructArmedAt = 0, lastWarnSecond = -1;
+for (const event of ['pointerdown', 'keydown', 'touchstart']) window.addEventListener(event, () => sound.unlock(), { passive: true });
 
 let renderer;
 try {
@@ -71,6 +76,7 @@ function connect() {
       game = data;
       receivedAt = performance.now();
       serverOffset = data.time - receivedAt;
+      soundEvents(previous, game);
       updateHud();
     }
   };
@@ -85,9 +91,18 @@ $('copyLink').onclick = async () => {
   catch { prompt('Copy room link:', url); }
 };
 for (const btn of document.querySelectorAll('[data-vehicle]')) btn.onclick = () => chooseVehicle(btn.dataset.vehicle);
+function vehicleTaken(type) {
+  const limit = world?.limits?.[type];
+  if (!limit || !game) return false;
+  return game.players.filter(q => q.id !== selfId && q.team === selfTeam && (q.alive ? q.type : q.nextType) === type).length >= limit;
+}
 function chooseVehicle(type) {
   const p = self();
-  if (!p?.alive) return toast('Respawn before switching vehicles');
+  if (!p) return;
+  const label = world.types[type].label.toUpperCase();
+  if (vehicleTaken(type)) return toast(`A teammate already has the ${label}`);
+  sound.click();
+  if (!p.alive) { send({ type: 'vehicle', vehicle: type }); return toast(`Respawning as ${label}`); }
   const base = world.bases[selfTeam];
   if (Math.hypot(p.x - base.x, p.y - base.y) > 155) return toast('Return to your base to change vehicles');
   send({ type: 'vehicle', vehicle: type });
@@ -98,12 +113,55 @@ window.addEventListener('keydown', e => {
   if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
   keyboard.add(e.code);
   if (vehicleKeys[e.code] && !e.repeat) chooseVehicle(vehicleKeys[e.code]);
+  if (e.code === 'KeyK' && !e.repeat && world) selfDestruct();
+  if (e.code === 'KeyM' && !e.repeat) toggleSound();
   if (e.code === 'KeyC' && !e.repeat && world) {
     input.driveMode = input.driveMode === 'classic' ? 'vector' : 'classic';
     toast(input.driveMode === 'classic' ? 'HULL DRIVE: WASD FOLLOWS THE VEHICLE NOSE' : 'SCREEN DRIVE: WASD POINTS ALONG THE SCREEN');
   }
 });
 window.addEventListener('keyup', e => keyboard.delete(e.code));
+function selfDestruct() {
+  if (!self()?.alive) return;
+  if (performance.now() - destructArmedAt < 2200) {
+    destructArmedAt = 0;
+    send({ type: 'selfdestruct' });
+  } else {
+    destructArmedAt = performance.now();
+    sound.warning();
+    toast('Press SELF-DESTRUCT (or K) again to confirm');
+  }
+}
+function toggleSound() {
+  sound.unlock();
+  sound.setEnabled(!sound.enabled);
+  $('soundToggle').textContent = sound.enabled ? 'SOUND ON' : 'SOUND OFF';
+}
+$('selfDestruct').onclick = selfDestruct;
+$('soundToggle').onclick = toggleSound;
+$('soundToggle').textContent = sound.enabled ? 'SOUND ON' : 'SOUND OFF';
+
+// Turns snapshot differences into one-shot sounds: shots, blasts, strikes, flags.
+function soundEvents(prev, next) {
+  const fresh = (list, seen, play) => {
+    const ids = new Set();
+    for (const item of list || []) { ids.add(item.id); if (prev && !seen.has(item.id)) play(item); }
+    seen.clear(); for (const id of ids) seen.add(id);
+  };
+  fresh(next.bullets, heard.bullets, b => sound.shot(b.kind, b.x, b.y));
+  fresh(next.explosions, heard.explosions, e => e.kind === 'splash' ? sound.splash(e.x, e.y) : sound.explosion(e.scale, e.x, e.y));
+  fresh(next.strikes, heard.strikes, s => {
+    const owner = next.players.find(p => p.id === s.ownerId);
+    sound.artillery(owner?.x ?? s.x, owner?.y ?? s.y, s.x, s.y, s.impactAt - next.time);
+  });
+  if (!prev) return;
+  for (const team of ['blue', 'red']) {
+    if (!prev.flags[team].carriedBy && next.flags[team].carriedBy) sound.pickup();
+    if (next.scores[team] > prev.scores[team]) sound.capture(team === selfTeam);
+  }
+  const was = prev.players.find(p => p.id === selfId), me = next.players.find(p => p.id === selfId);
+  if (me && was && me.deploy !== was.deploy && (me.deploy === 'deploying' || me.deploy === 'packing')) sound.deploy();
+}
 window.addEventListener('blur', () => { keyboard.clear(); input.fire = false; touch.moving = false; touch.aiming = false; });
 
 function aimOrigin() {
@@ -179,10 +237,17 @@ function updateHud() {
   const p = self(); if (!p) return;
   const t = world.types[p.type];
   const remoteDrone = game.drones?.find(d => d.ownerId === selfId);
-  $('actionButton').textContent = p.type === 'fpv' ? (remoteDrone ? 'DETONATE' : 'LAUNCH') : p.type === 'arty' ? 'STRIKE' : p.type === 'jeep' ? 'THROW' : 'FIRE';
+  const artyAction = { deploying: 'DEPLOYING', deployed: 'STRIKE', packing: 'RE-DEPLOY' }[p.deploy] || 'DEPLOY';
+  $('actionButton').textContent = p.type === 'fpv' ? (remoteDrone ? 'DETONATE' : 'LAUNCH') : p.type === 'arty' ? artyAction : p.type === 'jeep' ? 'THROW' : 'FIRE';
+  const deployPct = Math.round(deployProgress(p, game.time) * 100);
+  const artyStatus = {
+    deploying: `DEPLOYING ${deployPct}% · HOLD STILL`,
+    deployed: 'DEPLOYED · CLICK TO STRIKE · MOVE TO PACK UP',
+    packing: `PACKING UP ${100 - deployPct}% · CLICK TO RE-DEPLOY`,
+  }[p.deploy] || 'MOBILE · CLICK TO DEPLOY THE GUN';
   const link = remoteDrone ? Math.max(0, world.types.fpv.range - Math.hypot(remoteDrone.x - p.x, remoteDrone.y - p.y)) : world.types.fpv.range;
   $('unitStatus').textContent = p.type === 'fpv' ? (remoteDrone ? `DRONE LIVE · ${Math.ceil((remoteDrone.expiresAt - game.time) / 1000)}s · LINK ${Math.round(link)}` : `READY TO LAUNCH · LINK ${world.types.fpv.range}`)
-    : p.type === 'arty' ? 'INDIRECT FIRE · 1.2s IMPACT'
+    : p.type === 'arty' ? artyStatus
     : p.type === 'jeep' ? `FLAG CARRIER · GRENADES AIM FREELY · MINES ${p.mines ?? 0} (F)`
     : p.type === 'tank' ? 'CANNON FOLLOWS THE TURRET'
     : p.type === 'asv' ? 'ROCKETS LEAVE ALONG THE HULL'
@@ -195,11 +260,26 @@ function updateHud() {
     $(`${name}Bar`).style.width = `${pct}%`;
     $(`${name}Value`).textContent = `${pct}%`;
   }
-  document.querySelectorAll('[data-vehicle]').forEach(b => b.classList.toggle('selected', b.dataset.vehicle === p.type));
+  const chosen = p.alive ? p.type : p.nextType;
+  document.querySelectorAll('[data-vehicle]').forEach(b => {
+    b.classList.toggle('selected', b.dataset.vehicle === chosen);
+    b.classList.toggle('queued', !p.alive && b.dataset.vehicle === chosen);
+    b.classList.toggle('taken', vehicleTaken(b.dataset.vehicle));
+  });
   const banner = $('banner');
-  if (game.announcement) { banner.textContent = game.announcement; banner.classList.remove('hidden'); }
-  else if (!p.alive) { banner.textContent = 'VEHICLE DESTROYED — RESPAWNING'; banner.classList.remove('hidden'); }
-  else banner.classList.add('hidden');
+  let text = '', warning = false;
+  if (game.announcement) text = game.announcement;
+  else if (!p.alive) {
+    const wait = Math.max(0, (p.respawnAt - game.time) / 1000).toFixed(1);
+    text = `RESPAWN IN ${wait}s · NEXT: ${world.types[chosen]?.label.toUpperCase() || 'BATTLE TANK'} (1–6 TO CHANGE)`;
+  } else if (p.drownAt) {
+    text = `TOO FAR OUT — TURN BACK · SINKING IN ${Math.max(0, (p.drownAt - game.time) / 1000).toFixed(1)}s`;
+    warning = true;
+  }
+  banner.textContent = text;
+  banner.classList.toggle('hidden', !text);
+  banner.classList.toggle('warning', warning);
+  $('selfDestruct').disabled = !p.alive;
 }
 
 function aimTarget(p) {
@@ -222,7 +302,16 @@ function render(time) {
   } else refreshMouseAim();
   const p = self();
   const alpha = Math.max(0, Math.min(1, (time - receivedAt) / 50));
-  renderer.frame({ game, previous, alpha, serverNow: performance.now() + serverOffset, selfId, time, mouseWorld, target: aimTarget(p) });
+  const serverNow = performance.now() + serverOffset;
+  renderer.frame({ game, previous, alpha, serverNow, selfId, time, mouseWorld, target: aimTarget(p) });
+  sound.setListener(renderer.focus.x, renderer.focus.z, renderer.yaw);
+  const myDrone = game.drones?.find(d => d.ownerId === selfId);
+  sound.engine({ type: p?.type, alive: !!p?.alive, speed: Math.hypot(p?.vx || 0, p?.vy || 0), top: world.types[p?.type]?.speed, swimming: p?.surface === 'water', drone: !!myDrone });
+  if (p?.drownAt) {
+    const second = Math.ceil((p.drownAt - serverNow) / 1000);
+    if (second !== lastWarnSecond && second >= 0) { lastWarnSecond = second; sound.warning(); }
+  } else lastWarnSecond = -1;
+  $('selfDestruct').classList.toggle('armed', performance.now() - destructArmedAt < 2200);
   drawDroneOverlay(p);
   drawRadar();
   if (performance.now() - lastToast > 2400) $('toast').classList.remove('visible');
@@ -243,10 +332,20 @@ function drawDroneOverlay(p) {
 
 function drawRadar() {
   const x = radar.width / world.width, y = radar.height / world.height;
-  rctx.fillStyle = '#182f2a'; rctx.fillRect(0, 0, radar.width, radar.height);
+  if (world.coast?.length) {
+    rctx.fillStyle = '#16343a'; rctx.fillRect(0, 0, radar.width, radar.height);
+    rctx.fillStyle = '#182f2a'; rctx.beginPath();
+    world.coast.forEach((c, i) => i ? rctx.lineTo(c.x * x, c.y * y) : rctx.moveTo(c.x * x, c.y * y));
+    rctx.closePath(); rctx.fill();
+    rctx.strokeStyle = '#b5a77a88'; rctx.lineWidth = 1; rctx.stroke();
+  } else { rctx.fillStyle = '#182f2a'; rctx.fillRect(0, 0, radar.width, radar.height); }
   rctx.fillStyle = '#527f83'; for (const w of world.water) rctx.fillRect(w.x * x, w.y * y, w.w * x, w.h * y);
   for (const b of game.bridges ?? []) { rctx.fillStyle = b.hp > 0 ? '#c4be8e' : '#6c4740'; rctx.fillRect(b.x * x, b.y * y, b.w * x, b.h * y); }
-  rctx.fillStyle = '#7f9276'; for (const c of game.obstacles ?? []) if (c.hp > 0) rctx.fillRect(c.x * x, c.y * y, c.w * x, c.h * y);
+  for (const c of game.obstacles ?? []) {
+    if (c.hp <= 0) continue;
+    rctx.fillStyle = c.kind === 'gate' ? colors[c.team] : c.kind === 'wall' ? '#c9c6b0' : '#7f9276';
+    rctx.fillRect(c.x * x, c.y * y, Math.max(1.5, c.w * x), Math.max(1.5, c.h * y));
+  }
   for (const o of game.scenery ?? []) { if (o.hp <= 0) continue; rctx.fillStyle = o.kind === 'rock' ? '#9da797' : '#335b38'; rctx.fillRect(o.x * x - 1, o.y * y - 1, 3, 3); }
   for (const w of game.wrecks ?? []) { rctx.fillStyle = w.hp > 0 ? '#e6a275' : '#716459'; rctx.fillRect(w.x * x - 2, w.y * y - 2, 4, 4); }
   for (const side of ['blue', 'red']) {

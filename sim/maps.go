@@ -1,5 +1,7 @@
 package sim
 
+import "math"
+
 const (
 	Width  = 2400.0
 	Height = 1440.0
@@ -80,6 +82,89 @@ type MapDef struct {
 	Bridges   []BridgeDef `json:"bridges"`
 	Buildings []Rect      `json:"buildings"`
 	Foliage   int         `json:"-"`
+	// Coast is the island shoreline; everything outside it is open sea.
+	Coast []Point `json:"-"`
+}
+
+const coastCorner = 280.0
+
+// makeCoast traces the shoreline as a rounded rectangle pulled inland by a seeded
+// wobble. Only even harmonics are used, so the coast keeps every map's 180-degree
+// symmetry, and the shore is held back from both base pads.
+func makeCoast(seed uint32) []Point {
+	random := rng(seed ^ 0x9e3779b9)
+	p1, p2, p3 := random()*2*math.Pi, random()*2*math.Pi, random()*2*math.Pi
+	R := coastCorner
+	sw, sh, arc := Width-2*R, Height-2*R, math.Pi/2*R
+	perimeter := 2*sw + 2*sh + 4*arc
+	const samples = 480
+	pts := make([]Point, 0, samples)
+	for i := 0; i < samples; i++ {
+		s := perimeter * float64(i) / samples
+		x, y, nx, ny := roundedRectAt(s, R, sw, sh, arc)
+		u := 2 * math.Pi * s / perimeter
+		inset := 72 + 26*math.Sin(10*u+p1) + 14*math.Sin(18*u+p2) + 7*math.Sin(32*u+p3)
+		for _, b := range Bases {
+			w := 1 - clamp((hypot(x-b.X, y-b.Y)-300)/180, 0, 1)
+			inset += (math.Min(inset, 44) - inset) * w
+		}
+		pts = append(pts, Point{x - nx*inset, y - ny*inset})
+	}
+	return pts
+}
+
+// roundedRectAt walks the world rectangle with rounded corners clockwise from the
+// top edge and returns the point and its outward normal at arc length s.
+func roundedRectAt(s, R, sw, sh, arc float64) (x, y, nx, ny float64) {
+	corner := func(cx, cy, start, along float64) (float64, float64, float64, float64) {
+		a := start + along/R
+		return cx + R*math.Cos(a), cy + R*math.Sin(a), math.Cos(a), math.Sin(a)
+	}
+	switch {
+	case s < sw:
+		return R + s, 0, 0, -1
+	case s < sw+arc:
+		return corner(Width-R, R, -math.Pi/2, s-sw)
+	case s < sw+arc+sh:
+		return Width, R + s - sw - arc, 1, 0
+	case s < sw+2*arc+sh:
+		return corner(Width-R, Height-R, 0, s-sw-arc-sh)
+	case s < 2*sw+2*arc+sh:
+		return Width - R - (s - sw - 2*arc - sh), Height, 0, 1
+	case s < 2*sw+3*arc+sh:
+		return corner(R, Height-R, math.Pi/2, s-2*sw-2*arc-sh)
+	case s < 2*sw+3*arc+2*sh:
+		return 0, Height - R - (s - 2*sw - 3*arc - sh), -1, 0
+	default:
+		return corner(R, R, math.Pi, s-2*sw-3*arc-2*sh)
+	}
+}
+
+func pointInPoly(pts []Point, x, y float64) bool {
+	inside := false
+	for i, j := 0, len(pts)-1; i < len(pts); j, i = i, i+1 {
+		a, b := pts[i], pts[j]
+		if (a.Y > y) != (b.Y > y) && x < (b.X-a.X)*(y-a.Y)/(b.Y-a.Y)+a.X {
+			inside = !inside
+		}
+	}
+	return inside
+}
+
+// OnIsland reports whether (x, y) is on land, keeping at least margin from the shore.
+func (m *MapDef) OnIsland(x, y, margin float64) bool {
+	if !pointInPoly(m.Coast, x, y) {
+		return false
+	}
+	if margin <= 0 {
+		return true
+	}
+	for _, d := range [][2]float64{{1, 0}, {-1, 0}, {0, 1}, {0, -1}, {.7, .7}, {-.7, .7}, {.7, -.7}, {-.7, -.7}} {
+		if !pointInPoly(m.Coast, x+d[0]*margin, y+d[1]*margin) {
+			return false
+		}
+	}
+	return true
 }
 
 type MapChoice struct {
@@ -195,6 +280,38 @@ var turretPositions = []turretSpot{
 	{"blue", 450, 520}, {"blue", 450, 920}, {"red", 1950, 520}, {"red", 1950, 920},
 }
 
+type wallPiece struct {
+	Rect
+	gate bool
+}
+
+// baseWalls rings each HQ with a wall and three gates (toward the centre and to
+// either flank). Gates open only for the owning team. Laid out for blue and
+// mirrored 180 degrees for red, like the rest of the map.
+var baseWalls = func() map[string][]wallPiece {
+	b := Bases["blue"]
+	const hx, hy, th, mainGate, sideGate = 180.0, 162.0, 14.0, 120.0, 90.0
+	x0, x1, y0, y1 := b.X-hx-th/2, b.X+hx-th/2, b.Y-hy-th/2, b.Y+hy-th/2
+	bottom, gx := y1+th, b.X+112
+	blue := []wallPiece{
+		{Rect{x0, y0, th, bottom - y0}, false},
+		{Rect{x1, y0, th, b.Y - mainGate/2 - y0}, false},
+		{Rect{x1, b.Y - mainGate/2, th, mainGate}, true},
+		{Rect{x1, b.Y + mainGate/2, th, bottom - b.Y - mainGate/2}, false},
+	}
+	for _, y := range []float64{y0, y1} {
+		blue = append(blue,
+			wallPiece{Rect{x0 + th, y, gx - sideGate/2 - x0 - th, th}, false},
+			wallPiece{Rect{gx - sideGate/2, y, sideGate, th}, true},
+			wallPiece{Rect{gx + sideGate/2, y, x1 - gx - sideGate/2, th}, false})
+	}
+	red := make([]wallPiece, len(blue))
+	for i, p := range blue {
+		red[i] = wallPiece{Rect{Width - p.X - p.W, Height - p.Y - p.H, p.W, p.H}, p.gate}
+	}
+	return map[string][]wallPiece{"blue": blue, "red": red}
+}()
+
 var supplyCrates = []Rect{
 	{525, 265, 40, 39}, {1835, 1136, 40, 39},
 	{525, 1136, 40, 39}, {1835, 265, 40, 39},
@@ -238,7 +355,7 @@ func makeScenery(m *MapDef) []Object {
 	random := rng(m.Seed)
 	var props []Object
 	valid := func(x, y, r float64) bool {
-		if !(x > 65 && x < Width-65 && y > 55 && y < Height-55) {
+		if !(x > 65 && x < Width-65 && y > 55 && y < Height-55) || !m.OnIsland(x, y, r+22) {
 			return false
 		}
 		for _, w := range m.Roads {
@@ -267,7 +384,7 @@ func makeScenery(m *MapDef) []Object {
 			}
 		}
 		for _, b := range Bases {
-			if hypot(x-b.X, y-b.Y) < 220 {
+			if hypot(x-b.X, y-b.Y) < 262 {
 				return false
 			}
 		}
@@ -330,6 +447,7 @@ func makeScenery(m *MapDef) []Object {
 var scenery = func() map[string][]Object {
 	out := map[string][]Object{}
 	for id, m := range Maps {
+		m.Coast = makeCoast(m.Seed)
 		out[id] = makeScenery(m)
 	}
 	return out

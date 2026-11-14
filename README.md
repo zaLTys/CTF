@@ -19,6 +19,32 @@ Open **http://localhost:3000**. Choose a map and create a room; another player c
 
 ## What is new in v0.4
 
+### Island battlefields and amphibious jeeps
+
+- Every map is an island with an irregular, seeded coastline (kept 180-degree symmetric and clear of both bases), surrounded by open sea instead of a square wall.
+- Rivers and the sea no longer block movement. The **jeep is amphibious**: its wheels fold up and it swims at a third of its land speed. Every other ground vehicle that drives into water **sinks** and leaves no wreck. Helicopters and FPV drones fly over water as before.
+- Mines can't be laid in water.
+- A jeep may swim up to 340 units past the island's outer waters. Out there a 5-second countdown starts, and it sinks unless it turns back. A flag lost at sea returns home immediately.
+- Carrying the flag slows the jeep (about 18% lower top speed).
+
+### Respawning, self-destruct and vehicle limits
+
+- **Self-destruct** (HUD button or `K` twice) blows up your vehicle; the respawn wait is 6 seconds instead of 2.4.
+- While waiting to respawn, press `1`–`6` or tap a vehicle to choose what you respawn as. You keep your last choice after that.
+- Each team may field **one of each vehicle**, except jeeps (unlimited). Taken vehicles are greyed out.
+
+### HQ walls, gates and turrets
+
+- Every HQ sits inside a crenellated stone wall with three gates: one facing the centre of the map, one north and one south.
+- Gates are solid to enemies but your own vehicles drive straight through, and the doors swing open as you approach. Helicopters fly over everything.
+- Walls (240 HP) and gates (320 HP) can be blown open by enemy fire, with a "WALL/GATE BREACHED" announcement. Your own shots pass over your own walls.
+- Defence turrets now lead moving targets, reload in 0.7 s, fire faster shells (660 u/s) and hit for 26.
+
+### Sound and look
+
+- All sound is synthesised in the browser with WebAudio, so there are no audio files: engines and rotor wash, gunfire, rockets, grenades, explosions, splashes, artillery whistles, flag and capture jingles. `M` toggles it.
+- Cel shading with black ink outlines, puffy multi-blob trees and smoother cylinders.
+
 ### Three different playable battlefields
 
 Select the battlefield **before creating a room**. The server validates the map ID and sends the chosen authoritative geometry to all connected players; joining players cannot change the map.
@@ -72,7 +98,7 @@ All maps use 180-degree rotationally symmetric routes/cover for fair starts. A *
 | Switch vehicle at your base | Keys `1`–`6` | Unit selector along bottom |
 | Rotate camera | `Q` / `E` | — |
 | Lay mine (jeep) | `F` | — |
-| Artillery | Aim target point and click to launch timed area strike | Aim direction with right stick, tap STRIKE |
+| Artillery | First click deploys (1.8 s, can't move). Then each click fires a timed area strike, and the view widens the longer you stay planted. Driving packs up (1.4 s) before moving; click again to re-deploy | Tap DEPLOY, aim with right stick, tap STRIKE |
 | FPV | Click to launch, steer with WASD, click to detonate | LAUNCH, steer left stick, DETONATE |
 
 ## Architecture

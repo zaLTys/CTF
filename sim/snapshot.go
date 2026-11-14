@@ -3,22 +3,27 @@ package sim
 import "math"
 
 type PlayerView struct {
-	ID        string  `json:"id"`
-	Team      string  `json:"team"`
-	X         float64 `json:"x"`
-	Y         float64 `json:"y"`
-	Type      string  `json:"type"`
-	Angle     float64 `json:"angle"`
-	BodyAngle float64 `json:"bodyAngle"`
-	VX        float64 `json:"vx"`
-	VY        float64 `json:"vy"`
-	Surface   string  `json:"surface"`
-	HP        float64 `json:"hp"`
-	Ammo      float64 `json:"ammo"`
-	Mines     float64 `json:"mines"`
-	Fuel      float64 `json:"fuel"`
-	Alive     bool    `json:"alive"`
-	RespawnAt float64 `json:"respawnAt"`
+	ID            string  `json:"id"`
+	Team          string  `json:"team"`
+	X             float64 `json:"x"`
+	Y             float64 `json:"y"`
+	Type          string  `json:"type"`
+	Angle         float64 `json:"angle"`
+	BodyAngle     float64 `json:"bodyAngle"`
+	VX            float64 `json:"vx"`
+	VY            float64 `json:"vy"`
+	Surface       string  `json:"surface"`
+	HP            float64 `json:"hp"`
+	Ammo          float64 `json:"ammo"`
+	Mines         float64 `json:"mines"`
+	Fuel          float64 `json:"fuel"`
+	Alive         bool    `json:"alive"`
+	RespawnAt     float64 `json:"respawnAt"`
+	Deploy        string  `json:"deploy,omitempty"`
+	DeployUntil   float64 `json:"deployUntil,omitempty"`
+	DeployedSince float64 `json:"deployedSince,omitempty"`
+	NextType      string  `json:"nextType,omitempty"`
+	DrownAt       float64 `json:"drownAt,omitempty"`
 }
 
 type BulletView struct {
@@ -91,7 +96,8 @@ func TakeSnapshot(r *Room, now float64, viewerTeam string) Snapshot {
 	}
 	for _, p := range r.Players {
 		s.Players = append(s.Players, PlayerView{p.ID, p.Team, p.X, p.Y, p.Type, p.Angle, p.BodyAngle,
-			p.VX, p.VY, p.Surface, p.HP, p.Ammo, math.Floor(p.Mines), p.Fuel, p.Alive, p.RespawnAt})
+			p.VX, p.VY, p.Surface, p.HP, p.Ammo, math.Floor(p.Mines), p.Fuel, p.Alive, p.RespawnAt,
+			p.Deploy, p.DeployUntil, p.DeployedSince, p.NextType, p.DrownAt})
 	}
 	return s
 }
@@ -105,15 +111,19 @@ type World struct {
 	Biome      string                  `json:"biome"`
 	MapChoices []MapChoice             `json:"mapChoices"`
 	Water      []Rect                  `json:"water"`
+	Coast      []Point                 `json:"coast"`
 	Mud        []Ellipse               `json:"mud"`
 	Roads      []Rect                  `json:"roads"`
 	Cover      []Rect                  `json:"cover"`
 	Bridges    []BridgeDef             `json:"bridges"`
 	Types      map[string]*VehicleType `json:"types"`
+	Limits     map[string]int          `json:"limits"`
+	SeaMargin  float64                 `json:"seaMargin"`
 }
 
 func WorldFor(r *Room) World {
 	m := r.Map
 	return World{Width: Width, Height: Height, Bases: Bases, MapID: r.MapID, MapName: m.Name, Biome: m.Biome,
-		MapChoices: MapChoices, Water: m.Water, Mud: m.Mud, Roads: m.Roads, Cover: m.Cover, Bridges: m.Bridges, Types: Types}
+		MapChoices: MapChoices, Water: m.Water, Coast: m.Coast, Mud: m.Mud, Roads: m.Roads, Cover: m.Cover, Bridges: m.Bridges, Types: Types,
+		Limits: VehicleLimits, SeaMargin: SeaMargin}
 }
