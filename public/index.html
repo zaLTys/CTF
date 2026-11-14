@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#101915">
+  <meta name="description" content="Flag Run — multiplayer tactical vehicle capture-the-flag for your phone and browser.">
+  <title>FLAG RUN — Tactical CTF</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/client.js" defer></script>
+</head>
+<body>
+  <canvas id="battle" aria-label="Multiplayer battlefield"></canvas>
+  <div id="hud" class="hidden">
+    <div class="top-row">
+      <div class="identity"><span class="brand-mark">FR<span class="dot">.</span></span><span class="brand-caption">FLAG RUN <small>DESTRUCTION BUILD 0.4</small></span></div>
+      <div class="scores"><div class="team blue">BLUE <strong id="blueScore">0</strong></div><div class="versus">CTF</div><div class="team red"><strong id="redScore">0</strong> RED</div></div>
+      <div class="room-status"><span class="live-dot"></span><span id="roomLabel">ROOM —</span><button id="copyLink" title="Copy room invitation link">COPY LINK</button></div>
+    </div>
+    <canvas id="radar" width="195" height="120" aria-label="Minimap"></canvas>
+    <div id="banner" class="banner hidden"></div>
+    <div class="bottom-row">
+      <div class="stat-card"><div class="eyebrow" id="vehicleName">BATTLE TANK</div><div class="stat-line"><span>HULL</span><div class="meter"><span id="hpBar" class="hp"></span></div><strong id="hpValue">100%</strong></div><div class="stat-line"><span>FUEL</span><div class="meter"><span id="fuelBar" class="fuel"></span></div><strong id="fuelValue">100%</strong></div><div class="stat-line"><span>AMMO</span><div class="meter"><span id="ammoBar" class="ammo"></span></div><strong id="ammoValue">100%</strong></div></div>
+      <div class="vehicles" id="vehicleButtons">
+        <button data-vehicle="jeep" title="Press 1"><b>01</b><span>JEEP</span><small>FLAG RUNNER</small></button>
+        <button data-vehicle="tank" class="selected" title="Press 2"><b>02</b><span>TANK</span><small>ARMORED</small></button>
+        <button data-vehicle="heli" title="Press 3"><b>03</b><span>HELI</span><small>AIR SUPPORT</small></button>
+        <button data-vehicle="asv" title="Press 4"><b>04</b><span>ASV</span><small>ROCKETS</small></button>
+        <button data-vehicle="arty" title="Press 5"><b>05</b><span>ARTY</span><small>INDIRECT FIRE</small></button>
+        <button data-vehicle="fpv" title="Press 6"><b>06</b><span>FPV</span><small>DRONE CONTROL</small></button>
+        <div class="switch-note">SWITCH AT BASE · 1–6 UNITS · C TOGGLE SCREEN DRIVE</div>
+      </div>
+      <div class="tips"><div class="eyebrow">TACTICAL OBJECTIVE</div><div>Break their defenses. Capture the flag using your <b>jeep</b>.</div><small id="unitStatus">RETURN TO BASE FOR REPAIR + RESUPPLY</small><small id="physicsStatus">GRASS · SPEED 0 · HULL DRIVE</small></div>
+    </div>
+    <div class="touch-control move-control"><div class="control-label">MOVE</div><div id="leftStick" class="stick"><div class="stick-knob"></div></div></div>
+    <div class="touch-control aim-control"><div class="control-label">AIM / TARGET</div><div id="rightStick" class="stick aim"><div class="stick-knob"></div></div></div>
+    <button id="actionButton" aria-label="Fire weapon">FIRE</button>
+    <div id="toast" role="status"></div>
+  </div>
+  <div id="lobby" class="lobby">
+    <div class="intro-top"><span class="tiny-logo">FR / 001</span><span class="online-indicator"><span class="live-dot"></span> MULTIPLAYER PREVIEW</span></div>
+    <main class="lobby-card">
+      <div class="kicker">TOP-DOWN TACTICAL COMBAT <span>—</span> BROWSER + MOBILE</div>
+      <h1>FLAG<br><em>RUN.</em></h1>
+      <p>Six specialized units. Two bases. One flag. Break through enemy defenses, deploy your jeep, and bring the flag home.</p>
+      <div class="feature-line"><span>01 / VEHICLE COMBAT</span><span>02 / LIVE PVP</span><span>03 / CAPTURE THE FLAG</span></div>
+      <label class="map-chooser" for="mapSelect"><span>BATTLEFIELD</span><select id="mapSelect" aria-label="Choose battlefield">
+        <option value="causeway">OLD CAUSEWAY / RIVER BRIDGES</option>
+        <option value="delta">RIVER DELTA / WETLANDS</option>
+        <option value="badlands">DUST & IRON / DESERT QUARRIES</option>
+      </select></label>
+      <button id="createBtn" class="primary-button">CREATE PRIVATE ROOM <span>↗</span></button>
+      <div class="join-row"><input id="roomCode" maxlength="5" placeholder="ROOM CODE" aria-label="Five-character room code" autocomplete="off" spellcheck="false"><button id="joinBtn">JOIN ROOM →</button></div>
+      <div id="lobbyMessage" role="status">CONNECTING TO SERVER...</div>
+    </main>
+    <div class="intro-bottom"><span>BUILD 0.4 — COLLAPSIBLE BRIDGES & WRECKS</span><span>ORIGINAL GAMEPLAY, ORIGINAL VISUALS</span></div>
+  </div>
+</body>
+</html>

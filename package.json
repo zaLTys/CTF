@@ -1,0 +1,16 @@
+{
+  "name": "flag-run-arena",
+  "version": "0.4.0",
+  "private": true,
+  "description": "Original browser multiplayer vehicle CTF with tactical vehicle CTF with bridge collapse, building damage, persistent wrecks and three maps",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "ws": "^8.23.0"
+  },
+  "engines": { "node": ">=20" }
+}
